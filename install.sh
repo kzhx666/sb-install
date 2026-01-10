@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v2.7 (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.0 (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -164,19 +164,6 @@ apply_tuning() {
     buf_max=16777216; backlog=12000
   fi
 
-  # conntrack 表容量：Hy2 端口跳跃依赖 NAT 映射；表满/回收会导致“用一段时间后 hop 失效”
-  local ct_max
-  if [[ "$mem_kb" -ge 2000000 ]]; then
-    ct_max=524288
-  elif [[ "$mem_kb" -ge 1000000 ]]; then
-    ct_max=262144
-  elif [[ "$mem_kb" -ge 500000 ]]; then
-    ct_max=131072
-  else
-    ct_max=65536
-  fi
-
-
   mkdir -p /etc/sysctl.d >/dev/null 2>&1 || true
   cat > /etc/sysctl.d/99-singbox-tune.conf <<EOF
 net.core.rmem_max=${buf_max}
@@ -184,13 +171,6 @@ net.core.wmem_max=${buf_max}
 net.core.rmem_default=262144
 net.core.wmem_default=262144
 net.core.netdev_max_backlog=${backlog}
-
-# conntrack 容量（端口跳跃稳定性关键）
-net.netfilter.nf_conntrack_max=${ct_max}
-
-# Hy2 端口跳跃 / REDIRECT 需要更长的 UDP conntrack 超时（避免空闲后映射过期导致连接失效）
-net.netfilter.nf_conntrack_udp_timeout=300
-net.netfilter.nf_conntrack_udp_timeout_stream=600
 
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
@@ -277,17 +257,7 @@ do_backup(){
     local dst="$BACKUP_DIR/$ts"
     mkdir -p "$dst" >/dev/null 2>&1 || true
     cp -a "$CONF_DIR"/* "$dst"/ >/dev/null 2>&1 || true
-
-    # 仅保留 1 份备份（最新的一份）；多余的全部删除，防止 inode 爆炸
-    local n=0
-    for d in $(ls -1dt "$BACKUP_DIR"/* 2>/dev/null); do
-      n=$((n+1))
-      if [[ $n -gt 1 ]]; then
-        rm -rf "$d" >/dev/null 2>&1 || true
-      fi
-    done
-
-    ok "已备份旧配置到: $dst (仅保留 1 份)"
+    ok "已备份旧配置到: $dst"
   fi
 }
 
@@ -334,7 +304,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.7 (Fix: Hy2 Hop Port Map)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.0 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
@@ -1021,192 +991,115 @@ echo -e "${YELLOW}[7/12] Hy2 端口跳跃处理...${PLAIN}"
 # - 最稳定做法：把跳跃范围的 UDP 端口【重定向】到主 Hy2 端口（目的端口保持不变）。
 # - 优先使用 nftables，其次 iptables；若内核无 NAT（裁剪/LXC），自动降级为 socat 中继（可用但性能略差）。
 
-cat > /usr/local/bin/sb-hop.sh <<'EOF'
+cat > /usr/local/bin/sb-hop.sh <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-STATE="/etc/sing-box/.sb_state"
-STATE="/etc/sing-box/.sb_state"
+HOP_V4="${HOP_PORTS_LINK_V4:-}"
+HOP_V6="${HOP_PORTS_LINK_V6:-}"
+OUT_MODE="${OUT_MODE}"
+# 主 Hy2 端口（按输出模式分别）
+HY2_V4="${P_HY2_4}"
+HY2_V6="${P_HY2_6:-${P_HY2_4}}"
 
-# Load state (installer writes hop ranges / ports here)
-if [[ -f "$STATE" ]]; then
-  # shellcheck disable=SC1090
-  source "$STATE"
+# 清理旧的 socat 中继
+PIDF="/run/sb-hop-relay.pids"
+if [[ -f "\$PIDF" ]]; then
+  while read -r p; do kill "\$p" >/dev/null 2>&1 || true; done < "\$PIDF"
+  rm -f "\$PIDF" >/dev/null 2>&1 || true
 fi
 
-
-# -------- helpers --------
-log(){ echo "[sb-hop] $*"; }
-has(){ command -v "$1" >/dev/null 2>&1; }
-
-# Parse KEY="VALUE" lines
-get_state(){
-  local k="$1"
-  [[ -f "$STATE" ]] || return 1
-  # shellcheck disable=SC1090
-  source "$STATE"
-  # use indirect expansion
-  printf '%s' "${!k-}"
+range_to_hilo() {
+  local r="\$1"
+  [[ "\$r" =~ ^[0-9]+-[0-9]+$ ]] || return 1
+  echo "\${r%-*} \${r#*-}"
 }
 
-HOP_V4="${SB_HOP_PORTS:-}"
-HOP_V6="${SB_HOP_PORTS_V6:-}"
-HOP_V4_IPT="${HOP_V4//-/:}"
-HOP_V6_IPT="${HOP_V6//-/:}"
+nft_apply() {
+  command -v nft >/dev/null 2>&1 || return 1
 
-# target ports (Hy2 listen ports)
-HY2_V4="${SB_HY2_PORT:-${SB_HY2_PORT4:-}}"
-HY2_V6="${SB_HY2_PORT6:-${SB_HY2_PORT_V6:-}}"
+  # 创建 NAT 表/链
+  nft list table inet sbhop >/dev/null 2>&1 || nft add table inet sbhop
+  nft list chain inet sbhop prerouting >/dev/null 2>&1 || nft add chain inet sbhop prerouting "{ type nat hook prerouting priority -100; policy accept; }"
 
-# If state file doesn't export SB_HY2_PORT/6, try read from config.json
-CONF="/etc/sing-box/config.json"
-if [[ -z "${HY2_V4}" || -z "${HY2_V6}" ]] && has jq && [[ -s "$CONF" ]]; then
-  # tag name in installer: hy2-in-v4 / hy2-in-v6 (or legacy hy2-in)
-  p="$(jq -r '.inbounds[]|select(.tag=="hy2-in-v4" or .tag=="hy2-in")|.listen_port // empty' "$CONF" 2>/dev/null || true)"
-  [[ -n "$p" ]] && HY2_V4="$p"
-  # if ipv6 port is separate, tag hy2-in-6
-  p6="$(jq -r '.inbounds[]|select(.tag=="hy2-in-v6" or .tag=="hy2-in-6")|.listen_port // empty' "$CONF" 2>/dev/null || true)"
-  [[ -n "$p6" ]] && HY2_V6="$p6"
-fi
+  # 仅刷新本链（避免污染系统其它规则）
+  nft flush chain inet sbhop prerouting
 
-# fall back: if only one port known, use for both
-[[ -z "${HY2_V6}" && -n "${HY2_V4}" ]] && HY2_V6="$HY2_V4"
-[[ -z "${HY2_V4}" && -n "${HY2_V6}" ]] && HY2_V4="$HY2_V6"
+  # v4 规则
+  if [[ -n "\$HOP_V4" ]]; then
+    read -r HS HE < <(range_to_hilo "\$HOP_V4")
+    if [[ "\$HS" == "\$HE" ]]; then
+      nft add rule inet sbhop prerouting meta nfproto ipv4 udp dport "\$HS" redirect to ":\$HY2_V4" comment "sb-hop-v4"
+    else
+      nft add rule inet sbhop prerouting meta nfproto ipv4 udp dport "\$HS-\$HE" redirect to ":\$HY2_V4" comment "sb-hop-v4"
+    fi
+  fi
 
-# -------- sysctl tuning (best-effort) --------
-# Keep conntrack entries long enough for QUIC port hopping.
-sysctl_set(){
-  local k="$1" v="$2"
-  sysctl -w "$k=$v" >/dev/null 2>&1 || true
+  # v6 规则（仅双栈时启用）
+  if [[ "\$OUT_MODE" == "both" && -n "\$HOP_V6" ]]; then
+    read -r HS HE < <(range_to_hilo "\$HOP_V6")
+    if [[ "\$HS" == "\$HE" ]]; then
+      nft add rule inet sbhop prerouting meta nfproto ipv6 udp dport "\$HS" redirect to ":\$HY2_V6" comment "sb-hop-v6"
+    else
+      nft add rule inet sbhop prerouting meta nfproto ipv6 udp dport "\$HS-\$HE" redirect to ":\$HY2_V6" comment "sb-hop-v6"
+    fi
+  fi
 }
 
-sysctl_set net.netfilter.nf_conntrack_udp_timeout 900
-sysctl_set net.netfilter.nf_conntrack_udp_timeout_stream 1800
-
-# -------- nftables (preferred) --------
-nft_del_by_comment(){
-  local comment="$1"
-  nft -a list chain inet sbhop prerouting 2>/dev/null | awk -v c="$comment" '
-    $0 ~ c {
-      for(i=1;i<=NF;i++){
-        if($i=="handle"){print $(i+1)}
-      }
-    }' | while read -r h; do
-      [[ -n "$h" ]] || continue
-      nft delete rule inet sbhop prerouting handle "$h" >/dev/null 2>&1 || true
-    done
-}
-
-nft_ensure_chain(){
-  nft list table inet sbhop >/dev/null 2>&1 || nft add table inet sbhop >/dev/null 2>&1 || true
-  nft list chain inet sbhop prerouting >/dev/null 2>&1 || \
-    nft add chain inet sbhop prerouting '{ type nat hook prerouting priority -300; policy accept; }' >/dev/null 2>&1 || true
-}
-
-nft_apply(){
-  has nft || return 1
-  nft_ensure_chain
-
+ipt_apply() {
+  command -v iptables >/dev/null 2>&1 || return 1
   # v4
-  if [[ -n "${HOP_V4:-}" && -n "${HY2_V4:-}" ]]; then
-    nft_del_by_comment "sb-hop-v4"
-    nft add rule inet sbhop prerouting meta nfproto ipv4 udp dport ${HOP_V4} redirect to :${HY2_V4} comment "sb-hop-v4" >/dev/null 2>&1 || true
+  if [[ -n "\$HOP_V4" ]]; then
+    read -r HS HE < <(range_to_hilo "\$HOP_V4")
+    local R="\${HS}:\${HE}"
+    iptables -t nat -C PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$HY2_V4" 2>/dev/null || \
+      iptables -t nat -A PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$HY2_V4"
   fi
-
   # v6
-  if [[ -n "${HOP_V6:-}" && -n "${HY2_V6:-}" ]]; then
-    nft_del_by_comment "sb-hop-v6"
-    nft add rule inet sbhop prerouting meta nfproto ipv6 udp dport ${HOP_V6} redirect to :${HY2_V6} comment "sb-hop-v6" >/dev/null 2>&1 || true
+  if [[ "\$OUT_MODE" == "both" && -n "\$HOP_V6" ]] && command -v ip6tables >/dev/null 2>&1; then
+    read -r HS HE < <(range_to_hilo "\$HOP_V6")
+    local R="\${HS}:\${HE}"
+    ip6tables -t nat -C PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$HY2_V6" 2>/dev/null || \
+      ip6tables -t nat -A PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$HY2_V6"
   fi
-
-  return 0
 }
 
-# -------- iptables fallback --------
-ipt_apply(){
-  has iptables || return 1
-  if [[ -n "${HOP_V4:-}" && -n "${HY2_V4:-}" ]]; then
-    iptables -t nat -D PREROUTING -p udp --dport "${HOP_V4_IPT}" -j REDIRECT --to-ports "${HY2_V4}" >/dev/null 2>&1 || true
-    iptables -t nat -A PREROUTING -p udp --dport "${HOP_V4_IPT}" -j REDIRECT --to-ports "${HY2_V4}" >/dev/null 2>&1 || true
+socat_fallback() {
+  command -v socat >/dev/null 2>&1 || return 1
+  : > "\$PIDF"
+  # v4 中继
+  if [[ -n "\$HOP_V4" ]]; then
+    read -r HS HE < <(range_to_hilo "\$HOP_V4")
+    for ((p=HS; p<=HE; p++)); do
+      (socat -T120 UDP4-RECVFROM:"\$p",reuseaddr,fork UDP4:127.0.0.1:"\$HY2_V4" >/dev/null 2>&1 &) 
+      echo \$! >> "\$PIDF"
+    done
   fi
-  return 0
+  # v6 中继
+  if [[ "\$OUT_MODE" == "both" && -n "\$HOP_V6" ]]; then
+    read -r HS HE < <(range_to_hilo "\$HOP_V6")
+    for ((p=HS; p<=HE; p++)); do
+      (socat -T120 UDP6-RECVFROM:"\$p",reuseaddr,fork UDP6:[::1]:"\$HY2_V6" >/dev/null 2>&1 &) 
+      echo \$! >> "\$PIDF"
+    done
+  fi
 }
 
-ip6t_apply(){
-  has ip6tables || return 1
-  if [[ -n "${HOP_V6:-}" && -n "${HY2_V6:-}" ]]; then
-    ip6tables -t nat -D PREROUTING -p udp --dport "${HOP_V6_IPT}" -j REDIRECT --to-ports "${HY2_V6}" >/dev/null 2>&1 || true
-    ip6tables -t nat -A PREROUTING -p udp --dport "${HOP_V6_IPT}" -j REDIRECT --to-ports "${HY2_V6}" >/dev/null 2>&1 || true
-  fi
-  return 0
-}
-
-main(){
-  # Prefer nft, then iptables
-  if nft_apply; then
-    log "applied via nft (inet/prerouting priority -300)"
-    exit 0
-  fi
-
-  # iptables fallback
-  local ok=0
-  if ipt_apply; then ok=1; fi
-  if ip6t_apply; then ok=1; fi
-
-  if [[ "$ok" -eq 1 ]]; then
-    log "applied via iptables/ip6tables"
-    exit 0
-  fi
-
-  log "no firewall engine available; hop NOT applied"
+# 未启用跳跃直接退出
+if [[ -z "\$HOP_V4" && -z "\$HOP_V6" ]]; then
   exit 0
-}
-
-main "$@"
-EOF
-chmod +x /usr/local/bin/sb-hop.sh
-
-# -- Hy2 跳跃规则守护（重点修复：IPv6 跳跃规则“运行一段时间后失效”） --
-# 一些系统会在一段时间后被其它防火墙工具刷新 nft 规则，导致 v6 跳跃不通；
-# 这里用“定时补全”方式，只在规则缺失时重写，避免影响现有连接。
-if [[ "${HOP_REDIRECT_ENABLED}" == "1" ]]; then
-  if command -v systemctl >/dev/null 2>&1; then
-    cat > /etc/systemd/system/sb-hop.service <<'SVC'
-[Unit]
-Description=sb-hop keepalive (re-apply Hy2 hop redirect rules)
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/sb-hop.sh
-SVC
-
-    cat > /etc/systemd/system/sb-hop.timer <<'TMR'
-[Unit]
-Description=Run sb-hop periodically to keep Hy2 hop redirect alive
-
-[Timer]
-OnBootSec=45s
-OnUnitActiveSec=15s
-AccuracySec=5s
-Unit=sb-hop.service
-
-[Install]
-WantedBy=timers.target
-TMR
-
-    systemctl daemon-reload
-    systemctl enable --now sb-hop.timer >/dev/null 2>&1 || true
-  elif command -v rc-update >/dev/null 2>&1; then
-    # Alpine/OpenRC: 使用 crond 定时调用（2 分钟一次）
-    mkdir -p /etc/crontabs >/dev/null 2>&1 || true
-    touch /etc/crontabs/root
-    grep -q "/usr/local/bin/sb-hop.sh" /etc/crontabs/root 2>/dev/null || \
-      echo "*/1 * * * * /usr/local/bin/sb-hop.sh >/dev/null 2>&1" >> /etc/crontabs/root
-    rc-update add crond default >/dev/null 2>&1 || true
-    rc-service crond restart >/dev/null 2>&1 || true
-  fi
 fi
+
+# 优先 nft，其次 iptables，最后 socat
+if nft_apply; then
+  exit 0
+fi
+if ipt_apply; then
+  exit 0
+fi
+socat_fallback || true
+exit 0
+EOF
 
 chmod +x /usr/local/bin/sb-hop.sh >/dev/null 2>&1 || true
 
@@ -1245,7 +1138,6 @@ SB_HOST_IP="${HOST_PLAIN}"
 SB_IPV4="${IPV4}"
 SB_IPV6="${IPV6}"
 SB_OUT_MODE="${OUT_MODE}"
-SB_HY2_PORT="${P_HY2_4}"
 SB_HY2_PORT4="${P_HY2_4}"
 SB_HY2_PORT6="${P_HY2_6:-}"
 SB_TUIC_PORT4="${P_TUIC4}"
