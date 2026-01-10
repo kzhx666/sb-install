@@ -24,7 +24,6 @@ CERT_DIR="/etc/sing-box/cert"
 SHORTCUT_BIN="/usr/local/bin/sb"
 STATE_FILE="/etc/sing-box/.sb_state"
 MIHOMO_FILE="/etc/sing-box/mihomo_proxies.yaml"
-BACKUP_DIR="/etc/sing-box/backup"
 
 # --- 系统识别 ---
 PKG_MGR="unknown"
@@ -248,40 +247,7 @@ fw_allow_ports(){
   return 0
 }
 
-# --- 备份/回滚/卸载 ---
-do_backup(){
-  mkdir -p "$BACKUP_DIR" >/dev/null 2>&1 || true
-  if [[ -d "$CONF_DIR" && -f "$CONF_DIR/config.json" ]]; then
-    local ts
-    ts="$(date +%Y%m%d-%H%M%S 2>/dev/null || echo "backup")"
-    local dst="$BACKUP_DIR/$ts"
-    mkdir -p "$dst" >/dev/null 2>&1 || true
-    cp -a "$CONF_DIR"/* "$dst"/ >/dev/null 2>&1 || true
-    ok "已备份旧配置到: $dst"
-  fi
-}
-
-latest_backup(){
-  [[ -d "$BACKUP_DIR" ]] || return 1
-  ls -1dt "$BACKUP_DIR"/* 2>/dev/null | head -n 1
-}
-
-do_rollback(){
-  local b
-  b="$(latest_backup || true)"
-  if [[ -z "${b:-}" || ! -d "$b" ]]; then
-    err "未找到可回滚备份（$BACKUP_DIR）"
-    exit 1
-  fi
-  service_stop
-  mkdir -p "$CONF_DIR" >/dev/null 2>&1 || true
-  cp -a "$b"/* "$CONF_DIR"/ >/dev/null 2>&1 || true
-  ok "已从备份回滚: $b"
-  service_enable_restart
-  ok "已重启 sing-box"
-  exit 0
-}
-
+# --- 卸载 ---
 do_uninstall(){
   service_disable
   rm -f /etc/systemd/system/sing-box.service >/dev/null 2>&1 || true
@@ -299,7 +265,6 @@ do_uninstall(){
 # --- 参数 ---
 case "${1:-}" in
   --uninstall) do_uninstall ;;
-  --rollback) do_rollback ;;
 esac
 
 clear
@@ -318,8 +283,6 @@ create_user_group "$SB_USER" "$SB_GROUP"
 mkdir -p "$CONF_DIR" "$CERT_DIR"
 chown -R root:"$SB_GROUP" "$CONF_DIR" >/dev/null 2>&1 || true
 chmod 750 "$CONF_DIR" "$CERT_DIR" >/dev/null 2>&1 || true
-do_backup
-
 # ============================================================
 # [2] 配置收集
 # ============================================================
@@ -995,10 +958,18 @@ cat > /usr/local/bin/sb-hop.sh <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 说明：
+# - Hysteria2 的 mport(端口跳跃)在多数客户端会在范围内切换“目的端口”
+# - 最稳定做法：将跳跃范围 UDP 端口 REDIRECT 到主 Hy2 端口（端口映射 1:N）
+# - 优先 nftables，其次 iptables；若内核无 NAT（裁剪/LXC），降级为 socat 中继（可用但性能略差）
+#
+# 关键修复：
+# - 定时任务/多次运行不再 flush 整条链，避免“短暂无规则/偶发失败导致整段失效”
+# - OUT_MODE=ipv6 时也会为 IPv6 安装跳跃规则（之前只在 both 时装 v6，容易导致 v6 间歇/失效）
+
 HOP_V4="${HOP_PORTS_LINK_V4:-}"
 HOP_V6="${HOP_PORTS_LINK_V6:-}"
 OUT_MODE="${OUT_MODE}"
-# 主 Hy2 端口（按输出模式分别）
 HY2_V4="${P_HY2_4}"
 HY2_V6="${P_HY2_6:-${P_HY2_4}}"
 
@@ -1010,85 +981,141 @@ if [[ -f "\$PIDF" ]]; then
 fi
 
 range_to_hilo() {
-  local r="\$1"
-  [[ "\$r" =~ ^[0-9]+-[0-9]+$ ]] || return 1
-  echo "\${r%-*} \${r#*-}"
+  local s="\$1"
+  if [[ "\$s" =~ ^[0-9]+$ ]]; then
+    echo "\$s \$s"
+    return 0
+  fi
+  if [[ "\$s" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+    local a="\${BASH_REMATCH[1]}" b="\${BASH_REMATCH[2]}"
+    if (( a > b )); then echo "\$b \$a"; else echo "\$a \$b"; fi
+    return 0
+  fi
+  return 1
+}
+
+_need_v4=0; _need_v6=0
+R4=""; R6=""; P4=""; P6=""
+case "\$OUT_MODE" in
+  ipv4)
+    [[ -n "\$HOP_V4" ]] && _need_v4=1 && R4="\$HOP_V4" && P4="\$HY2_V4"
+    ;;
+  ipv6)
+    # 只有 ipv6 输出时，跳跃输入沿用 HOP_V4（用户只输入一份），规则安装到 IPv6
+    [[ -n "\$HOP_V4" ]] && _need_v6=1 && R6="\$HOP_V4" && P6="\$HY2_V6"
+    ;;
+  both)
+    [[ -n "\$HOP_V4" ]] && _need_v4=1 && R4="\$HOP_V4" && P4="\$HY2_V4"
+    [[ -n "\$HOP_V6" ]] && _need_v6=1 && R6="\$HOP_V6" && P6="\$HY2_V6"
+    ;;
+esac
+
+# 未启用跳跃直接退出
+if (( _need_v4==0 && _need_v6==0 )); then
+  exit 0
+fi
+
+nft_add_or_replace_rule() {
+  local nfproto="\$1" comment="\$2" range="\$3" toport="\$4"
+  [[ -z "\$range" ]] && return 0
+  read -r HS HE < <(range_to_hilo "\$range") || return 1
+
+  local want_dport
+  if [[ "\$HS" == "\$HE" ]]; then
+    want_dport="udp dport \$HS"
+  else
+    want_dport="udp dport \$HS-\$HE"
+  fi
+
+  local cur
+  cur="\$(nft -a list chain inet sbhop prerouting 2>/dev/null || true)"
+
+  # 已存在且匹配则不动（避免定时运行破坏连接）
+  if echo "\$cur" | grep -F "comment \"\$comment\"" | grep -F "meta nfproto \$nfproto" | grep -F "\$want_dport" | grep -F "redirect to :\$toport" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # 先尝试添加新规则；成功后再清理旧规则（避免“先删后加”造成窗口期/失败导致失效）
+  if [[ "\$HS" == "\$HE" ]]; then
+    nft add rule inet sbhop prerouting meta nfproto "\$nfproto" udp dport "\$HS" redirect to ":\$toport" comment "\$comment" >/dev/null 2>&1 || return 1
+  else
+    nft add rule inet sbhop prerouting meta nfproto "\$nfproto" udp dport "\$HS-\$HE" redirect to ":\$toport" comment "\$comment" >/dev/null 2>&1 || return 1
+  fi
+
+  # 删除旧的同 comment 规则（只删同 nfproto 的）
+  echo "\$cur" | awk -v c="\$comment" -v p="\$nfproto" '
+    \$0 ~ "comment \\""c"\\"" && \$0 ~ "meta nfproto "p {
+      for(i=1;i<=NF;i++) if(\$i=="handle") print \$(i+1)
+    }' | while read -r h; do
+      [[ -n "\$h" ]] && nft delete rule inet sbhop prerouting handle "\$h" >/dev/null 2>&1 || true
+    done
+
+  return 0
 }
 
 nft_apply() {
   command -v nft >/dev/null 2>&1 || return 1
 
-  # 创建 NAT 表/链
-  nft list table inet sbhop >/dev/null 2>&1 || nft add table inet sbhop
-  nft list chain inet sbhop prerouting >/dev/null 2>&1 || nft add chain inet sbhop prerouting "{ type nat hook prerouting priority -100; policy accept; }"
-
-  # 仅刷新本链（避免污染系统其它规则）
-  nft flush chain inet sbhop prerouting
-
-  # v4 规则
-  if [[ -n "\$HOP_V4" ]]; then
-    read -r HS HE < <(range_to_hilo "\$HOP_V4")
-    if [[ "\$HS" == "\$HE" ]]; then
-      nft add rule inet sbhop prerouting meta nfproto ipv4 udp dport "\$HS" redirect to ":\$HY2_V4" comment "sb-hop-v4"
-    else
-      nft add rule inet sbhop prerouting meta nfproto ipv4 udp dport "\$HS-\$HE" redirect to ":\$HY2_V4" comment "sb-hop-v4"
-    fi
+  nft list table inet sbhop >/dev/null 2>&1 || nft add table inet sbhop >/dev/null 2>&1 || return 1
+  if ! nft list chain inet sbhop prerouting >/dev/null 2>&1; then
+    nft add chain inet sbhop prerouting '{ type nat hook prerouting priority -100; }' >/dev/null 2>&1 || return 1
   fi
 
-  # v6 规则（仅双栈时启用）
-  if [[ "\$OUT_MODE" == "both" && -n "\$HOP_V6" ]]; then
-    read -r HS HE < <(range_to_hilo "\$HOP_V6")
-    if [[ "\$HS" == "\$HE" ]]; then
-      nft add rule inet sbhop prerouting meta nfproto ipv6 udp dport "\$HS" redirect to ":\$HY2_V6" comment "sb-hop-v6"
-    else
-      nft add rule inet sbhop prerouting meta nfproto ipv6 udp dport "\$HS-\$HE" redirect to ":\$HY2_V6" comment "sb-hop-v6"
-    fi
+  # 规则尽量只“补齐/替换”，不 flush
+  if (( _need_v4==1 )); then
+    nft_add_or_replace_rule ipv4 "sb-hop-v4" "\$R4" "\$P4" || return 1
   fi
+  if (( _need_v6==1 )); then
+    nft_add_or_replace_rule ipv6 "sb-hop-v6" "\$R6" "\$P6" || return 1
+  fi
+  return 0
 }
 
 ipt_apply() {
   command -v iptables >/dev/null 2>&1 || return 1
+
   # v4
-  if [[ -n "\$HOP_V4" ]]; then
-    read -r HS HE < <(range_to_hilo "\$HOP_V4")
+  if (( _need_v4==1 )); then
+    read -r HS HE < <(range_to_hilo "\$R4") || return 1
     local R="\${HS}:\${HE}"
-    iptables -t nat -C PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$HY2_V4" 2>/dev/null || \
-      iptables -t nat -A PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$HY2_V4"
+    iptables -t nat -C PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$P4" 2>/dev/null || \
+      iptables -t nat -A PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$P4"
   fi
+
   # v6
-  if [[ "\$OUT_MODE" == "both" && -n "\$HOP_V6" ]] && command -v ip6tables >/dev/null 2>&1; then
-    read -r HS HE < <(range_to_hilo "\$HOP_V6")
+  if (( _need_v6==1 )) && command -v ip6tables >/dev/null 2>&1; then
+    read -r HS HE < <(range_to_hilo "\$R6") || return 1
     local R="\${HS}:\${HE}"
-    ip6tables -t nat -C PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$HY2_V6" 2>/dev/null || \
-      ip6tables -t nat -A PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$HY2_V6"
+    ip6tables -t nat -C PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$P6" 2>/dev/null || \
+      ip6tables -t nat -A PREROUTING -p udp --dport "\$R" -j REDIRECT --to-ports "\$P6"
   fi
+  return 0
 }
 
 socat_fallback() {
   command -v socat >/dev/null 2>&1 || return 1
   : > "\$PIDF"
-  # v4 中继
-  if [[ -n "\$HOP_V4" ]]; then
-    read -r HS HE < <(range_to_hilo "\$HOP_V4")
-    for ((p=HS; p<=HE; p++)); do
-      (socat -T120 UDP4-RECVFROM:"\$p",reuseaddr,fork UDP4:127.0.0.1:"\$HY2_V4" >/dev/null 2>&1 &) 
-      echo \$! >> "\$PIDF"
-    done
-  fi
-  # v6 中继
-  if [[ "\$OUT_MODE" == "both" && -n "\$HOP_V6" ]]; then
-    read -r HS HE < <(range_to_hilo "\$HOP_V6")
-    for ((p=HS; p<=HE; p++)); do
-      (socat -T120 UDP6-RECVFROM:"\$p",reuseaddr,fork UDP6:[::1]:"\$HY2_V6" >/dev/null 2>&1 &) 
-      echo \$! >> "\$PIDF"
-    done
-  fi
-}
 
-# 未启用跳跃直接退出
-if [[ -z "\$HOP_V4" && -z "\$HOP_V6" ]]; then
-  exit 0
-fi
+  # v4 中继
+  if (( _need_v4==1 )); then
+    read -r HS HE < <(range_to_hilo "\$R4") || return 1
+    for ((p=HS; p<=HE; p++)); do
+      socat -T120 UDP4-RECVFROM:"\$p",fork,reuseaddr UDP4:127.0.0.1:"\$P4" >/dev/null 2>&1 &
+      echo "\$!" >> "\$PIDF"
+    done
+  fi
+
+  # v6 中继
+  if (( _need_v6==1 )); then
+    read -r HS HE < <(range_to_hilo "\$R6") || return 1
+    for ((p=HS; p<=HE; p++)); do
+      socat -T120 UDP6-RECVFROM:"\$p",fork,reuseaddr UDP6:[::1]:"\$P6" >/dev/null 2>&1 &
+      echo "\$!" >> "\$PIDF"
+    done
+  fi
+
+  return 0
+}
 
 # 优先 nft，其次 iptables，最后 socat
 if nft_apply; then
@@ -1100,6 +1127,8 @@ fi
 socat_fallback || true
 exit 0
 EOF
+chmod +x /usr/local/bin/sb-hop.sh
+/usr/local/bin/sb-hop.sh >/dev/null 2>&1 || true
 
 chmod +x /usr/local/bin/sb-hop.sh >/dev/null 2>&1 || true
 
