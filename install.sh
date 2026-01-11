@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v2.5 (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.1 (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -289,7 +289,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.5 (Fix: Firewall Logic Fix)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.1 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
@@ -383,15 +383,15 @@ fi
 DIRECT_INET4_LINE=""
 DIRECT_INET6_LINE=""
 if [[ "${OUT_MODE}" == "ipv4" ]]; then
-  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${LOCAL_IPV4}"'",\n'
+  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE='      "inet4_bind_address": "'"${LOCAL_IPV4}"'",'
   DIRECT_INET6_LINE=""
 elif [[ "${OUT_MODE}" == "ipv6" ]]; then
-  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE=$'      "inet6_bind_address": "'"${LOCAL_IPV6}"'",\n'
+  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE='      "inet6_bind_address": "'"${LOCAL_IPV6}"'",'
   # IPv6 节点需要访问仅 IPv4 的目标时可回退
-  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${LOCAL_IPV4}"'",\n'
+  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE='      "inet4_bind_address": "'"${LOCAL_IPV4}"'",'
 else
-  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${LOCAL_IPV4}"'",\n'
-  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE=$'      "inet6_bind_address": "'"${LOCAL_IPV6}"'",\n'
+  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE='      "inet4_bind_address": "'"${LOCAL_IPV4}"'",'
+  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE='      "inet6_bind_address": "'"${LOCAL_IPV6}"'",'
 fi
 
 # 单栈输出模式下的路由块（IPv4 节点：拦截/阻断直连到 IPv6 目标，防止 v6 出站）
@@ -1007,8 +1007,10 @@ cat > "$CONF_DIR/config.json" <<EOF
     {
       "type": "direct",
       "tag": "direct",
-${DIRECT_INET4_LINE}${DIRECT_INET6_LINE}      "domain_resolver": { "server": "local", "strategy": "${DIRECT_DOMAIN_STRATEGY}" }
-},
+${DIRECT_INET4_LINE}
+${DIRECT_INET6_LINE}
+      "domain_resolver": { "server": "local", "strategy": "${DIRECT_DOMAIN_STRATEGY}" }
+    },
     { "type": "block", "tag": "block" }
   ]
 }
