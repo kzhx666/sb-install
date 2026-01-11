@@ -331,13 +331,35 @@ ok "输出模式：${OUT_MODE}"
 # - OUT_MODE=both：按入站(v4/v6)分流到不同 direct 出口
 # ------------------------------------------------------------------------------
 DIRECT_DOMAIN_STRATEGY="prefer_ipv4"
-[[ "${OUT_MODE}" == "ipv6" ]] && DIRECT_DOMAIN_STRATEGY="prefer_ipv6"
+if [[ "${OUT_MODE}" == "ipv4" ]]; then
+  # IPv4 节点：严格只解析 A 记录，避免域名被解析到 IPv6 后走 v6 出站
+  DIRECT_DOMAIN_STRATEGY="ipv4_only"
+elif [[ "${OUT_MODE}" == "ipv6" ]]; then
+  # IPv6 节点：优先解析 AAAA，必要时仍可回退 IPv4（不做 strict-only）
+  DIRECT_DOMAIN_STRATEGY="prefer_ipv6"
+fi
 
-# 绑定源地址（存在则写入 direct outbound），用于强制/优先从对应栈出站
+# 绑定源地址（存在则写入 direct outbound），用于按节点栈优先出站
 DIRECT_INET4_LINE=""
 DIRECT_INET6_LINE=""
-[[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${IPV4}"'",\n'
-[[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE=$'      "inet6_bind_address": "'"${IPV6}"'",\n'
+if [[ "${OUT_MODE}" == "ipv4" ]]; then
+  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${IPV4}"'",\n'
+  DIRECT_INET6_LINE=""
+elif [[ "${OUT_MODE}" == "ipv6" ]]; then
+  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE=$'      "inet6_bind_address": "'"${IPV6}"'",\n'
+  # IPv6 节点需要访问仅 IPv4 的目标时可回退
+  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${IPV4}"'",\n'
+else
+  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${IPV4}"'",\n'
+  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE=$'      "inet6_bind_address": "'"${IPV6}"'",\n'
+fi
+
+# 单栈输出模式下的路由块（IPv4 节点：拦截/阻断直连到 IPv6 目标，防止 v6 出站）
+ROUTE_SINGLE_LINE='  "route": { "final": "direct", "auto_detect_interface": true },'
+if [[ "${OUT_MODE}" == "ipv4" ]]; then
+  ROUTE_SINGLE_LINE=$'  "route": {\n    "auto_detect_interface": true,\n    "rules": [\n      { "ip_version": 6, "outbound": "block" }\n    ],\n    "final": "direct"\n  },'
+fi
+
 
 echo -e "------------------------------------------------"
 read -r -p "请输入起始端口(回车随机高位): " BASE_PORT || true
@@ -814,7 +836,7 @@ cat > "$CONF_DIR/config.json" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
   "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
-  "route": { "final": "direct", "auto_detect_interface": true },
+  ${ROUTE_SINGLE_LINE}
   "inbounds": [
     {
       "type": "vless",
