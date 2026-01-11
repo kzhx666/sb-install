@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v2.1 (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.5 (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -289,7 +289,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.1 (Fix: Firewall Logic Fix)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.5 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
