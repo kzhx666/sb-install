@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v2.4 (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.1 (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -289,7 +289,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.4 (Fix: Firewall Logic Fix)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.1 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
@@ -323,8 +323,20 @@ echo -e "检测到公网栈：IPv4=${GREEN}${IPV4:-无}${PLAIN}  IPv6=${GREEN}${
 
 # --- [Fix] 获取本机接口地址（用于 bind），避免在 LXC/容器里绑定公网 IP 导致 "cannot assign requested address" ---
 IFACE="$(default_iface)"
-LOCAL_IPV4="$(ip -4 addr show dev "$IFACE" scope global 2>/dev/null | awk 'NR==1{print $2}' | cut -d/ -f1)"
-LOCAL_IPV6="$(ip -6 addr show dev "$IFACE" scope global 2>/dev/null | awk 'NR==1{print $2}' | cut -d/ -f1)"
+LOCAL_IPV4="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+LOCAL_IPV6="$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+
+# fallback: 从接口地址中提取（兼容 LXC 的 eth0@ifXXX 显示）
+[[ -z "${LOCAL_IPV4:-}" ]] && LOCAL_IPV4="$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+[[ -z "${LOCAL_IPV6:-}" ]] && LOCAL_IPV6="$(ip -6 -o addr show dev "$IFACE" scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+
+# 最后兜底：只有当公网地址确实存在于本机接口时，才允许用公网做 bind（避免容器里绑定公网报错）
+if [[ -z "${LOCAL_IPV4:-}" && -n "${IPV4:-}" ]]; then
+  ip -4 addr show 2>/dev/null | grep -qw "${IPV4}" && LOCAL_IPV4="${IPV4}"
+fi
+if [[ -z "${LOCAL_IPV6:-}" && -n "${IPV6:-}" ]]; then
+  ip -6 addr show 2>/dev/null | grep -qw "${IPV6}" && LOCAL_IPV6="${IPV6}"
+fi
 [[ -z "${LOCAL_IPV4:-}" ]] && LOCAL_IPV4="${IPV4:-}"
 [[ -z "${LOCAL_IPV6:-}" ]] && LOCAL_IPV6="${IPV6:-}"
 info "用于 bind 的本机地址：IPv4=${LOCAL_IPV4:-无}  IPv6=${LOCAL_IPV6:-无} (iface=${IFACE})"
