@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v2.2 (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.1 (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -269,7 +269,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.2 (Fix: Firewall Logic Fix)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.1 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
@@ -659,6 +659,7 @@ cat > "$CONF_DIR/config.json" <<EOF
   "route": {
     "auto_detect_interface": true,
     "rules": [
+      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4"], "ip_version": 6, "outbound": "block" },
       { "inbound": ["vless-reality-v6","hy2-in-v6","tuic-in-v6","anytls-in-v6","shadowtls-in-v6"], "outbound": "direct-v6" },
       { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4"], "outbound": "direct-v4" },
       { "inbound": ["vless-argo-in"], "outbound": "direct-v4" }
@@ -819,7 +820,7 @@ cat > "$CONF_DIR/config.json" <<EOF
       "type": "direct",
       "tag": "direct-v4",
       "inet4_bind_address": "${IPV4}",
-      "domain_resolver": { "server": "local", "strategy": "prefer_ipv4" }
+      "domain_resolver": { "server": "local", "strategy": "ipv4_only" }
     },
     {
       "type": "direct",
