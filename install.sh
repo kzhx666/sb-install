@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v2.3 (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.1 (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -231,16 +231,36 @@ fw_allow_ports(){
       local rs="${udp_range%-*}" re="${udp_range#*-}"
       iptables -C INPUT -p udp --dport "${rs}:${re}" -j ACCEPT >/dev/null 2>&1 || iptables -A INPUT -p udp --dport "${rs}:${re}" -j ACCEPT >/dev/null 2>&1 || true
     fi
+
+# 同步放行 IPv6（ip6tables），否则 IPv6 入站可能不通
+if command -v ip6tables >/dev/null 2>&1; then
+  for p in $tcp_ports; do
+    ip6tables -C INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
+  done
+  for p in $udp_ports; do
+    ip6tables -C INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
+  done
+  if [[ -n "$udp_range" ]]; then
+    local rs6="${udp_range%-*}" re6="${udp_range#*-}"
+    ip6tables -C INPUT -p udp --dport "${rs6}:${re6}" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p udp --dport "${rs6}:${re6}" -j ACCEPT >/dev/null 2>&1 || true
+  fi
+fi
     ok "已通过 iptables 放行端口"
   else
     # [Fix] 如果真的没有 iptables，尝试直接操作 nft
     if command -v nft >/dev/null 2>&1; then
-       # 简单的 nft 补救 (针对 Alpine 默认表)
-       nft add rule inet filter input udp dport { $udp_ports } accept >/dev/null 2>&1 || true
-       if [[ -n "$udp_range" ]]; then
-         local rs="${udp_range%-*}" re="${udp_range#*-}"
-         nft add rule inet filter input udp dport "$rs"-"$re" accept >/dev/null 2>&1 || true
-       fi
+
+# 尽量按端口逐条添加，兼容不同 nft 语法/链名环境
+for p in $tcp_ports; do
+  nft add rule inet filter input tcp dport "$p" accept >/dev/null 2>&1 || true
+done
+for p in $udp_ports; do
+  nft add rule inet filter input udp dport "$p" accept >/dev/null 2>&1 || true
+done
+if [[ -n "$udp_range" ]]; then
+  local rs="${udp_range%-*}" re="${udp_range#*-}"
+  nft add rule inet filter input udp dport "$rs"-"$re" accept >/dev/null 2>&1 || true
+fi
        warn "未找到 iptables，已尝试直接添加 nft 规则"
     fi
   fi
@@ -269,7 +289,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.3 (Fix: Firewall Logic Fix)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.1 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
@@ -300,6 +320,14 @@ if [[ "$HAS_V4" -ne 1 && "$HAS_V6" -ne 1 ]]; then
   exit 1
 fi
 echo -e "检测到公网栈：IPv4=${GREEN}${IPV4:-无}${PLAIN}  IPv6=${GREEN}${IPV6:-无}${PLAIN}"
+
+# --- [Fix] 获取本机接口地址（用于 bind），避免在 LXC/容器里绑定公网 IP 导致 "cannot assign requested address" ---
+IFACE="$(default_iface)"
+LOCAL_IPV4="$(ip -4 addr show dev "$IFACE" scope global 2>/dev/null | awk 'NR==1{print $2}' | cut -d/ -f1)"
+LOCAL_IPV6="$(ip -6 addr show dev "$IFACE" scope global 2>/dev/null | awk 'NR==1{print $2}' | cut -d/ -f1)"
+[[ -z "${LOCAL_IPV4:-}" ]] && LOCAL_IPV4="${IPV4:-}"
+[[ -z "${LOCAL_IPV6:-}" ]] && LOCAL_IPV6="${IPV6:-}"
+info "用于 bind 的本机地址：IPv4=${LOCAL_IPV4:-无}  IPv6=${LOCAL_IPV6:-无} (iface=${IFACE})"
 
 OUT_MODE="ipv4"
 if [[ "$HAS_V4" -eq 1 && "$HAS_V6" -eq 1 ]]; then
@@ -343,15 +371,15 @@ fi
 DIRECT_INET4_LINE=""
 DIRECT_INET6_LINE=""
 if [[ "${OUT_MODE}" == "ipv4" ]]; then
-  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${IPV4}"'",\n'
+  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${LOCAL_IPV4}"'",\n'
   DIRECT_INET6_LINE=""
 elif [[ "${OUT_MODE}" == "ipv6" ]]; then
-  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE=$'      "inet6_bind_address": "'"${IPV6}"'",\n'
+  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE=$'      "inet6_bind_address": "'"${LOCAL_IPV6}"'",\n'
   # IPv6 节点需要访问仅 IPv4 的目标时可回退
-  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${IPV4}"'",\n'
+  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${LOCAL_IPV4}"'",\n'
 else
-  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${IPV4}"'",\n'
-  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE=$'      "inet6_bind_address": "'"${IPV6}"'",\n'
+  [[ -n "${IPV4:-}" ]] && DIRECT_INET4_LINE=$'      "inet4_bind_address": "'"${LOCAL_IPV4}"'",\n'
+  [[ -n "${IPV6:-}" ]] && DIRECT_INET6_LINE=$'      "inet6_bind_address": "'"${LOCAL_IPV6}"'",\n'
 fi
 
 # 单栈输出模式下的路由块（IPv4 节点：拦截/阻断直连到 IPv6 目标，防止 v6 出站）
@@ -575,20 +603,19 @@ ok "sing-box 已安装: $SB_TAG"
 # ============================================================
 echo -e "${YELLOW}[5/12] 生成配置文件...${PLAIN}"
 
-UUID="$(cat /proc/sys/kernel/random/uuid)"
-TUIC_UUID="$(cat /proc/sys/kernel/random/uuid)"
-REALITY_KEY="$($INSTALL_PATH generate reality-keypair 2>&1)"
-echo "$REALITY_KEY" | grep -qi "Usage:" && REALITY_KEY="$($INSTALL_PATH generate reality-key 2>&1)"
-R_PRI="$(echo "$REALITY_KEY" | grep -i "Private" | awk '{print $2}')"
-R_PUB="$(echo "$REALITY_KEY" | grep -i "Public" | awk '{print $2}')"
-SHORT_ID="$(openssl rand -hex 8)"
+# --- [Fix] 重跑脚本时优先复用旧配置里的关键凭据/密钥，避免客户端仍用旧信息导致 unknown user / hmac mismatch ---
+OLD_CONF="$CONF_DIR/config.json"
+R_PUB_FROM_STATE=""
+if [[ -f "$STATE_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$STATE_FILE" >/dev/null 2>&1 || true
+  R_PUB_FROM_STATE="${SB_REALITY_PBK:-}"
+fi
 
-HY2_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
-TUIC_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
-ANYTLS_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
-ST_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
-ST_SS_METHOD="2022-blake3-aes-256-gcm"
-ST_SS_KEY="$(openssl rand 32 | base64 | tr -d '\n')"
+UUID=""; TUIC_UUID=""
+R_PRI=""; R_PUB=""; SHORT_ID=""
+HY2_PASS=""; TUIC_PASS=""; ANYTLS_PASS=""; ST_PASS=""
+ST_SS_METHOD=""; ST_SS_KEY=""
 ST_LOCAL_PORT=18080
 ST_HANDSHAKE_HOST="www.cloudflare.com"
 ST_HANDSHAKE_PORT=443
@@ -596,6 +623,52 @@ ST_VERSION=3
 REALITY_SNI="www.cloudflare.com"
 REALITY_HS_SERVER="1.1.1.1"
 REALITY_HS_PORT=443
+
+if [[ -s "$OLD_CONF" ]] && jq -e . "$OLD_CONF" >/dev/null 2>&1; then
+  UUID="$(jq -r '.inbounds[]? | select(.type=="vless") | .users[0].uuid' "$OLD_CONF" | head -n1)"
+  TUIC_UUID="$(jq -r '.inbounds[]? | select(.type=="tuic") | .users[0].uuid' "$OLD_CONF" | head -n1)"
+
+  HY2_PASS="$(jq -r '.inbounds[]? | select(.type=="hysteria2") | .users[0].password' "$OLD_CONF" | head -n1)"
+  TUIC_PASS="$(jq -r '.inbounds[]? | select(.type=="tuic") | .users[0].password' "$OLD_CONF" | head -n1)"
+  ANYTLS_PASS="$(jq -r '.inbounds[]? | select(.type=="anytls") | .users[0].password' "$OLD_CONF" | head -n1)"
+  ST_PASS="$(jq -r '.inbounds[]? | select(.type=="shadowtls") | .users[0].password' "$OLD_CONF" | head -n1)"
+
+  ST_SS_METHOD="$(jq -r '.inbounds[]? | select(.type=="shadowsocks" and .tag=="st-ss-local") | .method' "$OLD_CONF" | head -n1)"
+  ST_SS_KEY="$(jq -r '.inbounds[]? | select(.type=="shadowsocks" and .tag=="st-ss-local") | .password' "$OLD_CONF" | head -n1)"
+
+  ST_HANDSHAKE_HOST="$(jq -r '.inbounds[]? | select(.type=="shadowtls") | .handshake.server' "$OLD_CONF" | head -n1)"
+  ST_HANDSHAKE_PORT="$(jq -r '.inbounds[]? | select(.type=="shadowtls") | .handshake.server_port' "$OLD_CONF" | head -n1)"
+  ST_VERSION="$(jq -r '.inbounds[]? | select(.type=="shadowtls") | .version' "$OLD_CONF" | head -n1)"
+
+  REALITY_SNI="$(jq -r '.inbounds[]? | select(.type=="vless" and (.tls.reality? != null)) | .tls.server_name' "$OLD_CONF" | head -n1)"
+  REALITY_HS_SERVER="$(jq -r '.inbounds[]? | select(.type=="vless" and (.tls.reality? != null)) | .tls.reality.handshake.server' "$OLD_CONF" | head -n1)"
+  REALITY_HS_PORT="$(jq -r '.inbounds[]? | select(.type=="vless" and (.tls.reality? != null)) | .tls.reality.handshake.server_port' "$OLD_CONF" | head -n1)"
+
+  R_PRI="$(jq -r '.inbounds[]? | select(.type=="vless" and (.tls.reality? != null)) | .tls.reality.private_key' "$OLD_CONF" | head -n1)"
+  SHORT_ID="$(jq -r '.inbounds[]? | select(.type=="vless" and (.tls.reality? != null)) | .tls.reality.short_id[0]' "$OLD_CONF" | head -n1)"
+fi
+
+# 兜底生成（首次安装/旧配置缺字段）
+[[ -z "${UUID:-}" || "${UUID}" == "null" ]] && UUID="$(cat /proc/sys/kernel/random/uuid)"
+[[ -z "${TUIC_UUID:-}" || "${TUIC_UUID}" == "null" ]] && TUIC_UUID="$(cat /proc/sys/kernel/random/uuid)"
+[[ -z "${SHORT_ID:-}" || "${SHORT_ID}" == "null" ]] && SHORT_ID="$(openssl rand -hex 8)"
+
+[[ -z "${HY2_PASS:-}" || "${HY2_PASS}" == "null" ]] && HY2_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
+[[ -z "${TUIC_PASS:-}" || "${TUIC_PASS}" == "null" ]] && TUIC_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
+[[ -z "${ANYTLS_PASS:-}" || "${ANYTLS_PASS}" == "null" ]] && ANYTLS_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
+[[ -z "${ST_PASS:-}" || "${ST_PASS}" == "null" ]] && ST_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
+[[ -z "${ST_SS_METHOD:-}" || "${ST_SS_METHOD}" == "null" ]] && ST_SS_METHOD="2022-blake3-aes-256-gcm"
+[[ -z "${ST_SS_KEY:-}" || "${ST_SS_KEY}" == "null" ]] && ST_SS_KEY="$(openssl rand 32 | base64 | tr -d '\n')"
+
+# Reality 密钥：如果旧配置可复用 private_key + state 里有 public_key，则直接复用；否则生成一套新的
+if [[ -n "${R_PRI:-}" && "${R_PRI}" != "null" && -n "${R_PUB_FROM_STATE:-}" ]]; then
+  R_PUB="$R_PUB_FROM_STATE"
+else
+  REALITY_KEY="$($INSTALL_PATH generate reality-keypair 2>&1)"
+  echo "$REALITY_KEY" | grep -qi "Usage:" && REALITY_KEY="$($INSTALL_PATH generate reality-key 2>&1)"
+  R_PRI="$(echo "$REALITY_KEY" | grep -i "Private" | awk '{print $2}')"
+  R_PUB="$(echo "$REALITY_KEY" | grep -i "Public" | awk '{print $2}')"
+fi
 
 HOP_EXTRA_INBOUNDS=""; HOP_MAX=1000; HOP_SAMPLE_NOTE=""
 append_hop_range() {
@@ -819,13 +892,13 @@ cat > "$CONF_DIR/config.json" <<EOF
     {
       "type": "direct",
       "tag": "direct-v4",
-      "inet4_bind_address": "${IPV4}",
+      "inet4_bind_address": "${LOCAL_IPV4}",
       "domain_resolver": { "server": "local", "strategy": "ipv4_only" }
     },
     {
       "type": "direct",
       "tag": "direct-v6",
-      "inet6_bind_address": "${IPV6}",
+      "inet6_bind_address": "${LOCAL_IPV6}",
       "domain_resolver": { "server": "local", "strategy": "prefer_ipv6" }
     },
     { "type": "block", "tag": "block" }
@@ -932,6 +1005,10 @@ fi
 
 chown root:"$SB_GROUP" "$CONF_DIR/config.json" >/dev/null 2>&1 || true
 chmod 640 "$CONF_DIR/config.json" >/dev/null 2>&1 || true
+if ! jq . "$CONF_DIR/config.json" >/dev/null 2>&1; then
+  err "config.json JSON 格式错误，已停止（避免启动失败）。请检查脚本输出，或把 /etc/sing-box/config.json 发我排查。"
+  exit 1
+fi
 ok "配置已生成"
 
 # ============================================================
