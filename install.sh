@@ -1037,8 +1037,61 @@ if [[ -n "${ARGO_TOKEN:-}" && -n "${ARGO_DOMAIN:-}" ]]; then
   if command -v cloudflared >/dev/null 2>&1; then
     if has_systemd; then
       cloudflared service install "$ARGO_TOKEN" >/dev/null 2>&1 || true
-      sed -i 's|cloudflared tunnel run|cloudflared tunnel run --protocol http2|g' /etc/systemd/system/cloudflared.service >/dev/null 2>&1 || true
-      systemctl daemon-reload; systemctl restart cloudflared
+
+      # --- QUIC 优先，失败自动降级 HTTP2（解决 UDP/QUIC 不通导致 systemd 15s 超时） ---
+      cf_write_override() {
+        local proto="$1"
+        mkdir -p /etc/systemd/system/cloudflared.service.d >/dev/null 2>&1 || true
+        cat > /etc/systemd/system/cloudflared.service.d/override.conf <<EOF
+[Service]
+# 用 simple 避免 notify + TimeoutStartSec=15 导致启动被 systemd 判定超时
+Type=simple
+TimeoutStartSec=0
+
+# 覆盖 ExecStart（必须先清空再写）
+ExecStart=
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel run --protocol ${proto} --token ${ARGO_TOKEN}
+
+Restart=on-failure
+RestartSec=5s
+EOF
+      }
+
+      cf_connected() {
+        journalctl -u cloudflared -n 160 --no-pager 2>/dev/null | grep -Eqi           "Registered tunnel connection|Connection.*registered|Connected to.*edge|Tunnel.*connected|Serve tunnel|Started.*tunnel"
+      }
+
+      cf_quic_failed() {
+        journalctl -u cloudflared -n 160 --no-pager 2>/dev/null | grep -Eqi           "Failed to dial a quic connection|timeout: no recent network activity|timeout.*quic|quic.*timeout"
+      }
+
+      cf_try_proto() {
+        local proto="$1" wait_s="${2:-20}"
+        cf_write_override "$proto"
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl restart cloudflared >/dev/null 2>&1 || true
+        for ((i=0; i<wait_s; i++)); do
+          cf_connected && return 0
+          sleep 1
+        done
+        return 1
+      }
+
+      # 先尝试 QUIC
+      if cf_try_proto "quic" 15; then
+        ok "cloudflared 已通过 QUIC 连接"
+      else
+        if cf_quic_failed; then
+          warn "cloudflared QUIC 连接失败，自动切换到 HTTP2"
+        else
+          warn "cloudflared QUIC 未在限定时间内连上，尝试切换到 HTTP2"
+        fi
+        if cf_try_proto "http2" 25; then
+          ok "cloudflared 已通过 HTTP2 连接"
+        else
+          warn "cloudflared HTTP2 也未能连上：journalctl -u cloudflared -n 200 --no-pager"
+        fi
+      fi
     elif has_openrc; then
       cat > /etc/init.d/cloudflared <<EOF
 #!/sbin/openrc-run
