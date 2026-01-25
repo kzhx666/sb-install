@@ -26,20 +26,59 @@ STATE_FILE="/etc/sing-box/.sb_state"
 MIHOMO_FILE="/etc/sing-box/mihomo_proxies.yaml"
 # --- WARP (Cloudflare) 出站：用于分流/解锁 ---
 # 说明：
-#   - 默认启用 WARP（可通过环境变量关闭：WARP_ENABLE=0）
+#   - 支持“交互选择是否启用”（默认启用）。若不想交互：WARP_INTERACTIVE=0 或直接设置 WARP_ENABLE=0/1
 #   - 默认仅对部分域名分流到 WARP（WARP_MODE=split），也可全局走 WARP（WARP_MODE=all）
 #   - 使用 sing-box Endpoint/WireGuard（system=true）创建系统接口，再用 direct+bind_interface 走 WARP
 #   - 自带端口探测 + 守护（超时自动切换端口并重启 sing-box），解决你遇到的“时好时坏/超时”
-WARP_ENABLE="${WARP_ENABLE:-1}"                 # 1=启用 0=禁用
-WARP_MODE="${WARP_MODE:-split}"                # split=仅分流域名走 WARP；all=全部走 WARP
+WARP_INTERACTIVE="${WARP_INTERACTIVE:-1}"       # 1=交互询问（仅当未显式设置 WARP_ENABLE/WARP_MODE 时） 0=不询问
+WARP_ENABLE_DEFAULT="${WARP_ENABLE_DEFAULT:-1}" # 默认启用
+
+# 若用户没有显式设置 WARP_ENABLE，则可交互询问（仅在 TTY）
+if [[ -z "${WARP_ENABLE+x}" ]]; then
+  WARP_ENABLE="$WARP_ENABLE_DEFAULT"
+  if [[ "$WARP_INTERACTIVE" == "1" && -t 0 ]]; then
+    echo
+    echo -e "\033[36m[WARP]\033[0m 是否启用 Cloudflare WARP 分流？"
+    echo "  1) 启用（推荐：解决部分服务不可用/风控）"
+    echo "  0) 禁用（保持原始直连出口）"
+    read -r -p "选择 [1/0] (默认 1): " _ans || true
+    [[ "$_ans" == "0" ]] && WARP_ENABLE=0 || true
+  fi
+else
+  # 已显式设置则规范化
+  case "$WARP_ENABLE" in 0|1) ;; *) WARP_ENABLE="$WARP_ENABLE_DEFAULT";; esac
+fi
+
+# WARP 模式：若用户未显式设置且启用 WARP，可交互选择 split/all
+if [[ -z "${WARP_MODE+x}" ]]; then
+  WARP_MODE="split"
+  if [[ "$WARP_INTERACTIVE" == "1" && -t 0 && "$WARP_ENABLE" == "1" ]]; then
+    echo
+    echo -e "\033[36m[WARP]\033[0m 选择 WARP 使用模式："
+    echo "  1) split：仅命中的域名走 WARP（推荐）"
+    echo "  2) all  ：所有流量都走 WARP（更彻底，但可能影响速度/稳定性）"
+    read -r -p "选择 [1/2] (默认 1): " _m || true
+    [[ "$_m" == "2" ]] && WARP_MODE="all" || true
+  fi
+else
+  WARP_MODE="${WARP_MODE}"
+fi
+
+# 分流域名（逗号分隔）
 WARP_DOMAINS="${WARP_DOMAINS:-chatgpt.com,ws.chatgpt.com,openai.com,oaistatic.com,oaiusercontent.com,auth0.openai.com,api.openai.com,platform.openai.com,gemini.google.com,ai.google.com,bard.google.com}"
-WARP_INGRESS="${WARP_INGRESS:-162.159.193.10}" # Cloudflare WARP Anycast (可改：162.159.192.1 / 162.159.193.1 等)
-WARP_PORTS="${WARP_PORTS:-2408 500 1701 4500}" # 依次探测可用端口（常见：2408/500/1701/4500）
-WARP_MTU="${WARP_MTU:-1280}"                   # 建议 1280，减少碎片
-WARP_KEEPALIVE="${WARP_KEEPALIVE:-25}"         # persistent keepalive 秒
-WARP_IFNAME="${WARP_IFNAME:-sb-warp}"          # 系统 WireGuard 接口名
+# Cloudflare WARP Anycast（建议固定在 162.159.193.0/24）
+WARP_INGRESS="${WARP_INGRESS:-162.159.193.10}"
+# 依次探测可用端口（常见：2408/500/1701/4500）
+WARP_PORTS="${WARP_PORTS:-2408 500 1701 4500}"
+# 建议 1280，减少碎片（某些线路更稳）
+WARP_MTU="${WARP_MTU:-1280}"
+# persistent keepalive 秒（NAT 场景更稳）
+WARP_KEEPALIVE="${WARP_KEEPALIVE:-25}"
+# 系统 WireGuard 接口名
+WARP_IFNAME="${WARP_IFNAME:-sb-warp}"
 WARP_TEST_URL="${WARP_TEST_URL:-https://www.cloudflare.com/cdn-cgi/trace}"
-WARP_WATCH_INTERVAL="${WARP_WATCH_INTERVAL:-120}"  # systemd timer/cron 检测间隔（秒）
+# systemd timer/cron 检测间隔（秒）
+WARP_WATCH_INTERVAL="${WARP_WATCH_INTERVAL:-120}"
 
 
 # --- 系统识别 ---
