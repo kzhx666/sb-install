@@ -58,16 +58,16 @@ apk add --no-cache bash curl
 
 ## 一键安装
 
-> 仓库默认：`https://raw.githubusercontent.com/kzhx666/sb-install/refs/heads/main/install.sh`
+> 仓库默认：`https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh`
 
 ### Debian / Ubuntu / systemd
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/kzhx666/sb-install/refs/heads/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
 ```
 
 ### Alpine / OpenRC
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/kzhx666/sb-install/refs/heads/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
 ```
 
 ---
