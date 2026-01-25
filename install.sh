@@ -113,7 +113,7 @@ pick_free_port(){
     if ! ss -H -lntup 2>/dev/null | awk '{print $5}' | grep -qE "[:\]]${p}$"; then
       echo "$p"; return 0
     fi
-  已完成
+  done
   echo 51820
 }
 
@@ -154,7 +154,7 @@ setup_warp(){
   download_wgcf || { warn "wgcf 下载失败，跳过 WARP"; return 0; }
 
   local warp_dir="${CONF_DIR}/warp"
-  local 个人资料="${warp_dir}/wgcf-profile.conf"
+  local profile="${warp_dir}/wgcf-profile.conf"
   mkdir -p "$warp_dir"
 
   # 如果没有 profile，则注册并生成（可重复执行，已有文件会跳过）
@@ -296,10 +296,10 @@ find_free_base_port() {
       local p=$((base+i))
       [[ "$p" == "80" || "$p" == "443" ]] && okflag=0 && break
       port_in_use "$p" && okflag=0 && break
-    已完成
+    done
     if (( okflag == 1 )); then echo "$base"; return 0; fi
     tries=$((tries-1))
-  已完成
+  done
   return 1
 }
 
@@ -357,8 +357,8 @@ fw_allow_ports(){
   if command -v ufw >/dev/null 2>&1; then
     ufw status >/dev/null 2>&1 || true
     if ufw status 2>/dev/null | grep -qi "Status: active"; then
-      for p in $tcp_ports; do ufw allow "${p}/tcp" >/dev/null 2>&1 || true; 已完成
-      for p in $udp_ports; do ufw allow "${p}/udp" >/dev/null 2>&1 || true; 已完成
+      for p in $tcp_ports; do ufw allow "${p}/tcp" >/dev/null 2>&1 || true; done
+      for p in $udp_ports; do ufw allow "${p}/udp" >/dev/null 2>&1 || true; done
       [[ -n "$udp_range" ]] && ufw allow "${udp_range}/udp" >/dev/null 2>&1 || true
       ufw reload >/dev/null 2>&1 || true
       ok "已通过 ufw 放行端口"
@@ -368,8 +368,8 @@ fw_allow_ports(){
 
   if command -v firewall-cmd >/dev/null 2>&1; then
     if firewall-cmd --state >/dev/null 2>&1; then
-      for p in $tcp_ports; do firewall-cmd --permanent --add-port="${p}/tcp" >/dev/null 2>&1 || true; 已完成
-      for p in $udp_ports; do firewall-cmd --permanent --add-port="${p}/udp" >/dev/null 2>&1 || true; 已完成
+      for p in $tcp_ports; do firewall-cmd --permanent --add-port="${p}/tcp" >/dev/null 2>&1 || true; done
+      for p in $udp_ports; do firewall-cmd --permanent --add-port="${p}/udp" >/dev/null 2>&1 || true; done
       [[ -n "$udp_range" ]] && firewall-cmd --permanent --add-port="${udp_range}/udp" >/dev/null 2>&1 || true
       firewall-cmd --reload >/dev/null 2>&1 || true
       ok "已通过 firewalld 放行端口"
@@ -382,10 +382,10 @@ fw_allow_ports(){
     # 清理一下旧规则防止堆积 (可选，这里只追加)
     for p in $tcp_ports; do
       iptables -C INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || iptables -A INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
-    已完成
+    done
     for p in $udp_ports; do
       iptables -C INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || iptables -A INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
-    已完成
+    done
     if [[ -n "$udp_range" ]]; then
       local rs="${udp_range%-*}" re="${udp_range#*-}"
       iptables -C INPUT -p udp --dport "${rs}:${re}" -j ACCEPT >/dev/null 2>&1 || iptables -A INPUT -p udp --dport "${rs}:${re}" -j ACCEPT >/dev/null 2>&1 || true
@@ -395,10 +395,10 @@ fw_allow_ports(){
 if command -v ip6tables >/dev/null 2>&1; then
   for p in $tcp_ports; do
     ip6tables -C INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
-  已完成
+  done
   for p in $udp_ports; do
     ip6tables -C INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
-  已完成
+  done
   if [[ -n "$udp_range" ]]; then
     local rs6="${udp_range%-*}" re6="${udp_range#*-}"
     ip6tables -C INPUT -p udp --dport "${rs6}:${re6}" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p udp --dport "${rs6}:${re6}" -j ACCEPT >/dev/null 2>&1 || true
@@ -412,10 +412,10 @@ fi
 # 尽量按端口逐条添加，兼容不同 nft 语法/链名环境
 for p in $tcp_ports; do
   nft add rule inet filter input tcp dport "$p" accept >/dev/null 2>&1 || true
-已完成
+done
 for p in $udp_ports; do
   nft add rule inet filter input udp dport "$p" accept >/dev/null 2>&1 || true
-已完成
+done
 if [[ -n "$udp_range" ]]; then
   local rs="${udp_range%-*}" re="${udp_range#*-}"
   nft add rule inet filter input udp dport "$rs"-"$re" accept >/dev/null 2>&1 || true
@@ -448,7 +448,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.8 (Fix: Firewall Logic Fix)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.7 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
@@ -581,7 +581,7 @@ else
       p=$((BASE_PORT+i))
       [[ "$p" == "80" || "$p" == "443" ]] && okflag=0 && break
       port_in_use "$p" && okflag=0 && break
-    已完成
+    done
     if (( okflag == 0 )); then
       warn "你输入的端口段存在冲突(占用/80/443)，已自动改为随机高位端口"
       BASE_PORT="$(find_free_base_port "$NEED_PORTS" || true)"
