@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v2.8 (WARP+Gemini fix) (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.7.1 (WARP+Gemini fix) (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -244,13 +244,14 @@ setup_warp(){
   endpoint="$(grep -m1 '^Endpoint' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' || true)"
 
   [[ -z "${pri:-}" || -z "${pub:-}" || -z "${endpoint:-}" ]] && { warn "解析 WARP 配置失败（缺少关键字段），跳过 WARP"; return 0; }
-
-  # Address / AllowedIPs
-  local addrs_json allowed_json
-  addrs_json="$(grep '^Address' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' | jq -R . | jq -s .)"
-  allowed_json="$(grep '^AllowedIPs' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' | jq -R . | jq -s .)"
-  [[ -z "${addrs_json:-}" || "${addrs_json:-}" == "null" ]] && addrs_json='[]'
-  [[ -z "${allowed_json:-}" || "${allowed_json:-}" == "null" ]] && allowed_json='["0.0.0.0/0","::/0"]'
+  # Address / AllowedIPs（wgcf-profile 里是逗号分隔，需要拆成数组）
+  local addrs_json allowed_json addr_line allowed_line
+  addr_line="$(awk -F'= ' '/^Address/{print $2; exit}' "$profile" 2>/dev/null | tr -d '\r' || true)"
+  allowed_line="$(awk -F'= ' '/^AllowedIPs/{print $2; exit}' "$profile" 2>/dev/null | tr -d '\r' || true)"
+  addrs_json="$(printf '%s' "${addr_line}" | tr \, '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF' | jq -R . | jq -s . 2>/dev/null || echo '[]')"
+  allowed_json="$(printf '%s' "${allowed_line}" | tr \, '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF' | jq -R . | jq -s . 2>/dev/null || echo '[]')"
+  [[ -z "${addrs_json:-}" || "${addrs_json:-}" == "null" || "${addrs_json:-}" == "[]" ]] && addrs_json='[]'
+  [[ -z "${allowed_json:-}" || "${allowed_json:-}" == "null" || "${allowed_json:-}" == "[]" ]] && allowed_json='["0.0.0.0/0","::/0"]'
 
   # Endpoint host/port（支持 host:port 与 [ipv6]:port）
   host="$endpoint"; port="2408"
@@ -518,7 +519,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.8 (WARP+Gemini fix) (Fix: Firewall Logic & 1:1 Port Mapping)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.7 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
