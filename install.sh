@@ -25,6 +25,16 @@ SHORTCUT_BIN="/usr/local/bin/sb"
 STATE_FILE="/etc/sing-box/.sb_state"
 MIHOMO_FILE="/etc/sing-box/mihomo_proxies.yaml"
 
+# --- Cloudflare WARP (用于解锁/避免部分服务不可用) ---
+# 用法：
+#   默认开启：直接运行脚本即可
+#   关闭：SB_WARP=0 bash install.sh
+#   修改分流域名：SB_WARP_DOMAINS="openai.com,chatgpt.com,netflix.com" bash install.sh
+#   全局走 WARP：SB_WARP_MODE=all bash install.sh
+SB_WARP="${SB_WARP:-1}"                     # 1=开启, 0=关闭
+SB_WARP_MODE="${SB_WARP_MODE:-selective}"   # selective=仅分流指定域名, all=全局走 WARP
+SB_WARP_DOMAINS="${SB_WARP_DOMAINS:-openai.com,chatgpt.com,oaistatic.com,oaiusercontent.com,chat.openai.com,anthropic.com,claude.ai,api.anthropic.com,perplexity.ai,spotify.com,netflix.com,nflxvideo.net,disneyplus.com,disney-plus.net,dssott.com,hbomax.com,max.com,hulu.com,primevideo.com,gemini.google.com,bard.google.com,aistudio.google.com,makersuite.google.com,ai.google.dev,generativelanguage.googleapis.com}"
+
 # --- 系统识别 ---
 PKG_MGR="unknown"
 command -v apk >/dev/null 2>&1 && PKG_MGR="apk"
@@ -87,7 +97,156 @@ install_pkgs(){
   esac
 }
 
+# --- WARP 辅助函数 ---
+json_array_from_csv(){
+  # 输入：逗号分隔字符串；输出：JSON 数组字符串（例如 ["a.com","b.com"]）
+  local csv="${1:-}"
+  if [[ -z "$csv" ]]; then echo '[]'; return 0; fi
+  echo "$csv" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF' | jq -R . | jq -s .
+}
+
+pick_free_port(){
+  # 选择一个尽量不冲突的本地监听端口（用于 WARP WireGuard endpoint）
+  local p i
+  for i in $(seq 1 80); do
+    p=$(( (RANDOM % 20000) + 40000 ))  # 40000-59999
+    if ! ss -H -lntup 2>/dev/null | awk '{print $5}' | grep -qE "[:\]]${p}$"; then
+      echo "$p"; return 0
+    fi
+  done
+  echo 51820
+}
+
+download_wgcf(){
+  # 下载 wgcf 到 /usr/local/bin/wgcf（如果已存在则跳过）
+  command -v wgcf >/dev/null 2>&1 && return 0
+  local arch="amd64" tag url
+  case "$(uname -m)" in
+    x86_64|amd64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    i386|i686) arch="386" ;;
+    armv7l|armv7) arch="armv7" ;;
+    *) arch="amd64" ;;
+  esac
+  tag="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r .tag_name 2>/dev/null || true)"
+  [[ -z "${tag:-}" || "$tag" == "null" ]] && tag="v2.2.30"
+  url="https://github.com/ViRb3/wgcf/releases/download/${tag}/wgcf_${tag#v}_linux_${arch}"
+  info "下载 wgcf：$url"
+  curl -fsSL "$url" -o /usr/local/bin/wgcf || return 1
+  chmod +x /usr/local/bin/wgcf || true
+  return 0
+}
+
+setup_warp(){
+  # 生成 WARP WireGuard 配置，并准备 sing-box endpoints / route 片段
+  # 输出变量：
+  #   WARP_OK=1/0
+  #   WARP_ENDPOINT_JSON（带结尾逗号）
+  #   WARP_ROUTE_RULE_BOTH（用于 both 模板，带结尾逗号）
+  #   WARP_ROUTE_RULE_SINGLE（用于 single 模板，不带结尾逗号）
+  WARP_OK=0
+  WARP_ENDPOINT_JSON=""
+  WARP_ROUTE_RULE_BOTH=""
+  WARP_ROUTE_RULE_SINGLE=""
+
+  [[ "${SB_WARP:-1}" == "0" ]] && return 0
+
+  download_wgcf || { warn "wgcf 下载失败，跳过 WARP"; return 0; }
+
+  local warp_dir="${CONF_DIR}/warp"
+  local profile="${warp_dir}/wgcf-profile.conf"
+  mkdir -p "$warp_dir"
+
+  # 如果没有 profile，则注册并生成（可重复执行，已有文件会跳过）
+  if [[ ! -s "$profile" ]]; then
+    info "生成 WARP 配置 (wgcf register/generate)"
+    ( cd "$warp_dir" && wgcf register --accept-tos >/dev/null 2>&1 && wgcf generate >/dev/null 2>&1 ) || {
+      warn "wgcf 注册/生成失败，跳过 WARP（可能是网络/Cloudflare 限制）"
+      return 0
+    }
+  fi
+
+  # 解析 profile
+  local pri pub psk endpoint host port
+  pri="$(grep -m1 '^PrivateKey' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' || true)"
+  pub="$(grep -m1 '^PublicKey' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' || true)"
+  psk="$(grep -m1 '^PresharedKey' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' || true)"
+  endpoint="$(grep -m1 '^Endpoint' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' || true)"
+
+  [[ -z "${pri:-}" || -z "${pub:-}" || -z "${endpoint:-}" ]] && { warn "解析 WARP 配置失败（缺少关键字段），跳过 WARP"; return 0; }
+
+  # Address / AllowedIPs
+  local addrs_json allowed_json
+  addrs_json="$(grep '^Address' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' | jq -R . | jq -s .)"
+  allowed_json="$(grep '^AllowedIPs' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' | jq -R . | jq -s .)"
+  [[ -z "${addrs_json:-}" || "${addrs_json:-}" == "null" ]] && addrs_json='[]'
+  [[ -z "${allowed_json:-}" || "${allowed_json:-}" == "null" ]] && allowed_json='["0.0.0.0/0","::/0"]'
+
+  # Endpoint host/port（支持 host:port 与 [ipv6]:port）
+  host="$endpoint"; port="2408"
+  if [[ "$endpoint" =~ ^\[(.*)\]:(.*)$ ]]; then
+    host="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[2]}"
+  elif [[ "$endpoint" == *:* ]]; then
+    host="${endpoint%:*}"; port="${endpoint##*:}"
+  fi
+
+  local listen_port
+  listen_port="$(pick_free_port)"
+
+  # 避免在 SB_WARP_MODE=all 时产生“走自己”的递归：让 WARP 自己的拨号固定走 direct
+  local detour_tag="direct"
+  [[ "${OUT_MODE:-single}" == "both" ]] && detour_tag="direct-v4"
+
+  local psk_line=""
+  [[ -n "${psk:-}" ]] && psk_line="          \"pre_shared_key\": \"${psk}\","
+
+  # 分流域名列表
+  local domains_json
+  domains_json="$(json_array_from_csv "${SB_WARP_DOMAINS:-}")"
+  [[ "${domains_json:-}" == "[]" ]] && domains_json='["openai.com","chatgpt.com"]'
+
+  # 路由模式：selective / all
+  if [[ "${SB_WARP_MODE:-selective}" == "all" ]]; then
+    WARP_ROUTE_RULE_SINGLE='      { "outbound": "warp" }'
+    WARP_ROUTE_RULE_BOTH='      { "outbound": "warp" },'
+  else
+    WARP_ROUTE_RULE_SINGLE="      { \"domain_suffix\": ${domains_json}, \"outbound\": \"warp\" }"
+    WARP_ROUTE_RULE_BOTH="      { \"domain_suffix\": ${domains_json}, \"outbound\": \"warp\" },"
+  fi
+
+  # endpoints JSON（sing-box 1.11+ endpoint/wireguard）
+  WARP_ENDPOINT_JSON="$(cat <<JSON
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "warp",
+      "system": false,
+      "mtu": 1280,
+      "address": ${addrs_json},
+      "private_key": "${pri}",
+      "listen_port": ${listen_port},
+      "detour": "${detour_tag}",
+      "peers": [
+        {
+          "address": "${host}",
+          "port": ${port},
+          "public_key": "${pub}",
+${psk_line}
+          "allowed_ips": ${allowed_json},
+          "persistent_keepalive_interval": 25
+        }
+      ],
+      "udp_timeout": "5m"
+    }
+  ],
+JSON
+)"
+  WARP_OK=1
+  ok "WARP 已就绪：endpoint=${host}:${port} listen_port=${listen_port} 模式=${SB_WARP_MODE}"
+}
+
 # --- 用户/组 ---
+
 group_exists(){
   local g="$1"
   if command -v getent >/dev/null 2>&1; then getent group "$g" >/dev/null 2>&1
@@ -736,14 +895,35 @@ if [[ -n "$ARGO_TOKEN" && -n "$ARGO_DOMAIN" ]]; then
     }"
 fi
 
+
+# ============================================================
+# [WARP] 生成 WARP endpoint（可选）
+# ============================================================
+setup_warp
+
+# 单栈模式：如果启用了 WARP，则给 route 加入分流/全局规则
+if [[ "${WARP_OK:-0}" -eq 1 ]]; then
+  ROUTE_SINGLE_LINE="$(cat <<EOF
+  "route": {
+    "auto_detect_interface": true,
+    "rules": [
+${WARP_ROUTE_RULE_SINGLE}
+    ],
+    "final": "direct"
+  },
+EOF
+)"
+fi
+
 if [[ "$OUT_MODE" == "both" ]]; then
 cat > "$CONF_DIR/config.json" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
   "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
-  "route": {
+  ${WARP_ENDPOINT_JSON}  "route": {
     "auto_detect_interface": true,
     "rules": [
+${WARP_ROUTE_RULE_BOTH}
       { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4"], "ip_version": 6, "outbound": "block" },
       { "inbound": ["vless-reality-v6","hy2-in-v6","tuic-in-v6","anytls-in-v6","shadowtls-in-v6"], "outbound": "direct-v6" },
       { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4"], "outbound": "direct-v4" },
@@ -922,7 +1102,7 @@ cat > "$CONF_DIR/config.json" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
   "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
-  ${ROUTE_SINGLE_LINE}
+  ${WARP_ENDPOINT_JSON}  ${ROUTE_SINGLE_LINE}
   "inbounds": [
     {
       "type": "vless",
