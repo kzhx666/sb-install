@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v3.1 (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.7 (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -28,6 +28,15 @@ MIHOMO_FILE="/etc/sing-box/mihomo_proxies.yaml"
 # 说明：
 #   - 支持“交互选择是否启用”（默认启用）。若不想交互：WARP_INTERACTIVE=0 或直接设置 WARP_ENABLE=0/1
 #   - 默认仅对部分域名分流到 WARP（WARP_MODE=split），也可全局走 WARP（WARP_MODE=all）
+# 默认 WARP 分流域名（split 模式生效，可用 WARP_DOMAINS 覆盖，逗号分隔）
+# 说明：默认 WARP 分流域名已覆盖「网页 + App 后端」：
+# - Gemini App 常见后端：proactivebackend-pa.googleapis.com / generativelanguage.googleapis.com / (可选) googleapis.com
+# - ChatGPT App 常见后端：chatgpt.com / ws.chatgpt.com / api.openai.com / oaistatic.com / oaiusercontent.com
+# - 流媒体常见域名：netflix.com + nflx* / disneyplus.com + bamgrid.com / primevideo.com 等
+# 你可以用环境变量自定义（逗号分隔）：
+#   WARP_DOMAINS="gemini.google.com,proactivebackend-pa.googleapis.com,generativelanguage.googleapis.com" bash install.sh
+WARP_DOMAINS_DEFAULT="chatgpt.com,ws.chatgpt.com,chat.openai.com,openai.com,api.openai.com,auth.openai.com,platform.openai.com,oaistatic.com,oaiusercontent.com,openaiapi-site.azureedge.net,cdn.oaistatic.com,files.oaiusercontent.com,gemini.google.com,aistudio.google.com,bard.google.com,generativelanguage.googleapis.com,proactivebackend-pa.googleapis.com,googleapis.com,accounts.google.com,oauth2.googleapis.com,claude.ai,anthropic.com,api.anthropic.com,perplexity.ai,api.perplexity.ai,pplx.ai,copilot.microsoft.com,bing.com,edge.microsoft.com,x.ai,grok.x.ai,x.com,netflix.com,nflxvideo.net,nflximg.net,nflximg.com,nflxext.com,nflxso.net,disneyplus.com,dssott.com,bamgrid.com,hulu.com,hulustream.com,huluim.com,primevideo.com,amazonvideo.com,aiv-cdn.net,max.com,hbomax.com,hbo.com,spotify.com,scdn.co,spotifycdn.com,tiktok.com,tiktokcdn.com,tiktokv.com,reddit.com,redd.it,discord.com,discord.gg,discordapp.com,ai.google.com,auth0.openai.com"
+
 #   - 使用 sing-box Endpoint/WireGuard（system=true）创建系统接口，再用 direct+bind_interface 走 WARP
 #   - 自带端口探测 + 守护（超时自动切换端口并重启 sing-box），解决你遇到的“时好时坏/超时”
 WARP_INTERACTIVE="${WARP_INTERACTIVE:-1}"       # 1=交互询问（仅当未显式设置 WARP_ENABLE/WARP_MODE 时） 0=不询问
@@ -65,7 +74,7 @@ else
 fi
 
 # 分流域名（逗号分隔）
-WARP_DOMAINS="${WARP_DOMAINS:-chatgpt.com,ws.chatgpt.com,openai.com,oaistatic.com,oaiusercontent.com,auth0.openai.com,api.openai.com,platform.openai.com,gemini.google.com,ai.google.com,bard.google.com}"
+WARP_DOMAINS="${WARP_DOMAINS:-$WARP_DOMAINS_DEFAULT}"
 # Cloudflare WARP Anycast（建议固定在 162.159.193.0/24）
 WARP_INGRESS="${WARP_INGRESS:-engage.cloudflareclient.com}"
 # 可选入口候选（空格分隔）。默认同时包含 consumer WARP(162.159.192.1) 与 WireGuard 段(162.159.193.10)
@@ -566,7 +575,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v3.1        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.7 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
