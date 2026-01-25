@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v2.8 (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.7 (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -67,7 +67,9 @@ fi
 # 分流域名（逗号分隔）
 WARP_DOMAINS="${WARP_DOMAINS:-chatgpt.com,ws.chatgpt.com,openai.com,oaistatic.com,oaiusercontent.com,auth0.openai.com,api.openai.com,platform.openai.com,gemini.google.com,ai.google.com,bard.google.com}"
 # Cloudflare WARP Anycast（建议固定在 162.159.193.0/24）
-WARP_INGRESS="${WARP_INGRESS:-162.159.193.10}"
+WARP_INGRESS="${WARP_INGRESS:-engage.cloudflareclient.com}"
+# 可选入口候选（空格分隔）。默认同时包含 consumer WARP(162.159.192.1) 与 WireGuard 段(162.159.193.10)
+WARP_INGRESS_CANDIDATES="${WARP_INGRESS_CANDIDATES:-engage.cloudflareclient.com 162.159.192.1 162.159.193.10}"
 # 依次探测可用端口（常见：2408/500/1701/4500）
 WARP_PORTS="${WARP_PORTS:-2408 500 1701 4500}"
 # 建议 1280，减少碎片（某些线路更稳）
@@ -329,7 +331,8 @@ _parse_warp_profile(){
 
 # 用临时 sing-box socks 测试某个端口是否可用（返回 0=可用）
 _warp_try_port(){
-  local port="$1"
+  local ingress="$1"
+  local port="$2"
   local tmpc="/tmp/sb-warp-test.json"
   local tmplog="/tmp/sb-warp-test.log"
   local tmpsocks_port=17890
@@ -347,12 +350,13 @@ _warp_try_port(){
       "tag": "warp-ep",
       "system": true,
       "name": "${WARP_IFNAME}",
+      "domain_resolver": { "server": "local", "strategy": "prefer_ipv4" },
       "mtu": ${WARP_MTU},
       "address": ${WARP_ADDRESS_JSON},
       "private_key": "${WARP_PRIVATE_KEY_VAL}",
       "peers": [
         {
-          "address": "${WARP_INGRESS}",
+          "address": "${ingress}",
           "port": ${port},
           "public_key": "${WARP_PUBLIC_KEY_VAL}",
           "pre_shared_key": "${WARP_PRESHARED_KEY_VAL}",
@@ -391,19 +395,35 @@ EOF
   return $rc
 }
 
-# 选择一个可用端口，导出 WARP_PORT_SELECTED
+# 选择一个可用入口+端口，导出 WARP_INGRESS_SELECTED / WARP_PORT_SELECTED
 _select_warp_port(){
-  local p
-  for p in $WARP_PORTS; do
-    info "WARP 端口探测：${WARP_INGRESS}:${p} ..."
-    if _warp_try_port "$p"; then
-      WARP_PORT_SELECTED="$p"
-      ok "WARP 端口可用：${p}"
-      return 0
+  local ingress p
+
+  # 构造候选入口列表：优先用户指定的 WARP_INGRESS，其次 WARP_INGRESS_CANDIDATES
+  local candidates="${WARP_INGRESS} ${WARP_INGRESS_CANDIDATES}"
+  local seen=" "
+
+  for ingress in $candidates; do
+    [[ -z "$ingress" ]] && continue
+    # 去重
+    if [[ "$seen" == *" $ingress "* ]]; then
+      continue
     fi
-    warn "WARP 端口不可用：${p}"
+    seen+=" $ingress "
+
+    for p in $WARP_PORTS; do
+      info "WARP 探测：${ingress}:${p} ..."
+      if _warp_try_port "$ingress" "$p"; then
+        WARP_INGRESS_SELECTED="$ingress"
+        WARP_PORT_SELECTED="$p"
+        ok "WARP 可用：${ingress}:${p}"
+        return 0
+      fi
+      warn "WARP 不可用：${ingress}:${p}"
+    done
   done
-  err "所有 WARP 端口探测失败（${WARP_PORTS}），你可以改 WARP_INGRESS 或 WARP_PORTS 再试"
+
+  err "所有 WARP 探测失败（入口：${candidates}；端口：${WARP_PORTS}）。"
   return 1
 }
 
@@ -546,7 +566,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.8 (Fix: Firewall Logic Fix)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.7 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
@@ -889,7 +909,7 @@ if [[ "${WARP_ENABLE}" == "1" ]]; then
 fi
 
 if [[ "${WARP_ENABLE}" == "1" ]]; then
-  _select_warp_port || { warn "WARP 端口探测失败，将以不启用 WARP 继续"; WARP_ENABLE="0"; }
+  _select_warp_port || { warn "WARP 探测失败：将继续写入 WARP 配置（默认 ${WARP_INGRESS}:2408），后续可通过 WARP_INGRESS/WARP_INGRESS_CANDIDATES/WARP_PORTS 调整或等待网络恢复"; WARP_INGRESS_SELECTED="${WARP_INGRESS}"; WARP_PORT_SELECTED="${WARP_PORT_SELECTED:-2408}"; }
 fi
 
 # single 栈阻断规则（保持原逻辑）
@@ -910,12 +930,13 @@ if [[ "${WARP_ENABLE}" == "1" ]]; then
       "tag": "warp-ep",
       "system": true,
       "name": "${WARP_IFNAME}",
+      "domain_resolver": { "server": "local", "strategy": "prefer_ipv4" },
       "mtu": ${WARP_MTU},
       "address": ${WARP_ADDRESS_JSON},
       "private_key": "${WARP_PRIVATE_KEY_VAL}",
       "peers": [
         {
-          "address": "${WARP_INGRESS}",
+          "address": "${WARP_INGRESS_SELECTED:-$WARP_INGRESS}",
           "port": ${WARP_PORT_SELECTED},
           "public_key": "${WARP_PUBLIC_KEY_VAL}",
           "pre_shared_key": "${WARP_PRESHARED_KEY_VAL}",
@@ -963,7 +984,7 @@ EOX
     WARP_ROUTE_RULES_SINGLE="$WARP_ROUTE_RULES_BOTH"
   fi
 
-  ok "WARP 已启用：接口 ${WARP_IFNAME}，入口 ${WARP_INGRESS}:${WARP_PORT_SELECTED}，模式 ${WARP_MODE}"
+  ok "WARP 已启用：接口 ${WARP_IFNAME}，入口 ${WARP_INGRESS_SELECTED:-$WARP_INGRESS}:${WARP_PORT_SELECTED}，模式 ${WARP_MODE}"
 fi
 
 
@@ -1671,7 +1692,8 @@ SB_HOP_ENGINE="${HOP_ENGINE}"
 SB_WARP_ENABLE="${WARP_ENABLE}"
 SB_WARP_MODE="${WARP_MODE}"
 SB_WARP_DOMAINS="${WARP_DOMAINS}"
-SB_WARP_INGRESS="${WARP_INGRESS}"
+SB_WARP_INGRESS="${WARP_INGRESS_SELECTED:-$WARP_INGRESS}"
+SB_WARP_INGRESS_CANDIDATES="${WARP_INGRESS_CANDIDATES}"
 SB_WARP_PORTS="${WARP_PORTS}"
 SB_WARP_PORT="${WARP_PORT_SELECTED:-}"
 SB_WARP_IFNAME="${WARP_IFNAME}"
@@ -1737,7 +1759,8 @@ if [[ -s "$STATE_FILE" ]]; then
 fi
 
 WARP_IFNAME="${SB_WARP_IFNAME:-sb-warp}"
-WARP_INGRESS="${SB_WARP_INGRESS:-162.159.193.10}"
+WARP_INGRESS="${SB_WARP_INGRESS:-engage.cloudflareclient.com}"
+WARP_INGRESS_CANDIDATES="${SB_WARP_INGRESS_CANDIDATES:-engage.cloudflareclient.com 162.159.192.1 162.159.193.10}"
 WARP_PORTS="${SB_WARP_PORTS:-2408 500 1701 4500}"
 WARP_PORT="${SB_WARP_PORT:-}"
 TEST_URL="${WARP_TEST_URL:-https://www.cloudflare.com/cdn-cgi/trace}"
@@ -1750,30 +1773,60 @@ if timeout 10 curl -fsSL --interface "$WARP_IFNAME" --connect-timeout 4 --max-ti
   exit 0
 fi
 
-# 失败：轮换端口
+# 失败：轮换入口/端口（避免某个 POP/端口抽风导致长期黑洞）
+# 入口候选：优先当前 SB_WARP_INGRESS，其次 SB_WARP_INGRESS_CANDIDATES
+candidates="${WARP_INGRESS} ${WARP_INGRESS_CANDIDATES}"
+seen=" "
+ingresses=()
+for x in $candidates; do
+  [[ -z "$x" ]] && continue
+  if [[ "$seen" == *" $x "* ]]; then
+    continue
+  fi
+  seen+=" $x "
+  ingresses+=("$x")
+done
+
 ports=()
 for p in $WARP_PORTS; do ports+=("$p"); done
-if [[ ${#ports[@]} -eq 0 ]]; then exit 0; fi
+if [[ ${#ingresses[@]} -eq 0 || ${#ports[@]} -eq 0 ]]; then exit 0; fi
 
-next="${ports[0]}"
-if [[ -n "${WARP_PORT}" ]]; then
-  for i in "${!ports[@]}"; do
-    if [[ "${ports[$i]}" == "$WARP_PORT" ]]; then
-      j=$(( (i+1) % ${#ports[@]} ))
-      next="${ports[$j]}"
+# 展开组合列表 ingress:port
+eps=()
+for a in "${ingresses[@]}"; do
+  for p in "${ports[@]}"; do
+    eps+=("${a}:${p}")
+  done
+done
+
+cur=""
+if [[ -n "${WARP_PORT:-}" && -n "${WARP_INGRESS:-}" ]]; then
+  cur="${WARP_INGRESS}:${WARP_PORT}"
+fi
+
+next="${eps[0]}"
+if [[ -n "$cur" ]]; then
+  for i in "${!eps[@]}"; do
+    if [[ "${eps[$i]}" == "$cur" ]]; then
+      j=$(( (i+1) % ${#eps[@]} ))
+      next="${eps[$j]}"
       break
     fi
   done
 fi
 
+next_addr="${next%:*}"
+next_port="${next##*:}"
+
 tmp="$(mktemp)"
-# 更新 endpoints -> peers[0].port
-jq --argjson p "$next" '(.endpoints[] | select(.tag=="warp-ep") | .peers[0].port) = $p' "$CONF_FILE" > "$tmp" || { rm -f "$tmp"; exit 0; }
+# 更新 endpoints -> peers[0].address/port
+jq --arg a "$next_addr" --argjson p "$next_port" '(.endpoints[] | select(.tag=="warp-ep") | .peers[0].address) = $a | (.endpoints[] | select(.tag=="warp-ep") | .peers[0].port) = $p' "$CONF_FILE" > "$tmp" || { rm -f "$tmp"; exit 0; }
 mv "$tmp" "$CONF_FILE"
 
 # 更新 state
 if [[ -s "$STATE_FILE" ]]; then
-  sed -i "s/^SB_WARP_PORT=.*/SB_WARP_PORT=\\"$next\\"/g" "$STATE_FILE" 2>/dev/null || true
+  sed -i "s/^SB_WARP_INGRESS=.*/SB_WARP_INGRESS=\"$next_addr\"/g" "$STATE_FILE" 2>/dev/null || true
+  sed -i "s/^SB_WARP_PORT=.*/SB_WARP_PORT=\"$next_port\"/g" "$STATE_FILE" 2>/dev/null || true
 fi
 
 # 重启 sing-box
