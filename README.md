@@ -46,6 +46,9 @@
 
 ## 快速开始
 
+官方脚本地址：`https://raw.githubusercontent.com/kzhx666/sb-install/refs/heads/main/install.sh`
+
+
 ### 0）前置依赖：安装 curl + bash（强烈建议先执行）
 
 **Debian/Ubuntu**
@@ -75,7 +78,7 @@ apk add --no-cache curl bash ca-certificates
 把下面的 `SCRIPT_URL` 替换成你仓库里的 raw 地址（例如 GitHub raw）：
 
 ```bash
-SCRIPT_URL="https://raw.githubusercontent.com/<USER>/<REPO>/main/install.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/kzhx666/sb-install/refs/heads/main/install.sh"
 curl -fsSL "$SCRIPT_URL" -o install.sh
 chmod +x install.sh
 bash install.sh
@@ -86,12 +89,12 @@ bash install.sh
 ### 2）一行命令安装（curl | bash）
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/<USER>/<REPO>/main/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/refs/heads/main/install.sh)"
 ```
 
 > 你也可以先审计再运行：
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<USER>/<REPO>/main/install.sh | sed -n '1,200p'
+curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/refs/heads/main/install.sh | sed -n '1,200p'
 ```
 
 ---
@@ -264,7 +267,7 @@ bash install.sh --uninstall
 如果你是 curl|bash 方式运行，可这样传参：
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/<USER>/<REPO>/main/install.sh)" -- --uninstall
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/refs/heads/main/install.sh)" -- --uninstall
 ```
 
 ---
