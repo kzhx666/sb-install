@@ -260,10 +260,6 @@ setup_warp(){
   elif [[ "$endpoint" == *:* ]]; then
     host="${endpoint%:*}"; port="${endpoint##*:}"
   fi
-
-  local listen_port
-  listen_port="$(pick_free_port)"
-
   # 避免在 SB_WARP_MODE=all 时产生“走自己”的递归：让 WARP 自己的拨号固定走 direct
   local detour_tag="direct"
   [[ "${OUT_MODE:-single}" == "both" ]] && detour_tag="direct-v4"
@@ -295,7 +291,6 @@ setup_warp(){
       "mtu": 1280,
       "address": ${addrs_json},
       "private_key": "${pri}",
-      "listen_port": ${listen_port},
       "detour": "${detour_tag}",
       "peers": [
         {
@@ -313,7 +308,7 @@ ${psk_line}
 JSON
 )"
   WARP_OK=1
-  ok "WARP 已就绪：endpoint=${host}:${port} listen_port=${listen_port} 模式=${SB_WARP_MODE}"
+  ok "WARP 已就绪：endpoint=${host}:${port} 模式=${SB_WARP_MODE}"
 }
 
 # --- 用户/组 ---
