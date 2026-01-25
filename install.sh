@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v3.0 (WARP+Gemini fix) (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.7 (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -24,88 +24,25 @@ CERT_DIR="/etc/sing-box/cert"
 SHORTCUT_BIN="/usr/local/bin/sb"
 STATE_FILE="/etc/sing-box/.sb_state"
 MIHOMO_FILE="/etc/sing-box/mihomo_proxies.yaml"
-
-# --- Cloudflare WARP（可选：用于解锁/避免部分服务不可用） ---
-# 你可以在安装时交互选择；也可以用环境变量无交互运行：
-#   关闭：SB_WARP=0 bash install.sh
-#   开启：SB_WARP=1 bash install.sh
-#   分流(默认)：SB_WARP_MODE=selective
-#   全局：SB_WARP_MODE=all
-#   自定义分流域名后缀(逗号分隔)：SB_WARP_DOMAINS="openai.com,gemini.google.com"
-#
+# --- WARP (Cloudflare) 出站：用于分流/解锁 ---
 # 说明：
-# - selective：只让你填写的“域名后缀”走 WARP（更稳更推荐）
-# - all：所有流量都走 WARP（可能影响速度/兼容性）
-: "${SB_WARP:=auto}"                     # auto=安装时询问；1=开启；0=关闭
-: "${SB_WARP_MODE:=selective}"           # selective=仅分流指定域名；all=全局走 WARP
-: "${SB_WARP_DOMAINS:=openai.com,chatgpt.com,oaistatic.com,oaiusercontent.com,chat.openai.com,anthropic.com,claude.ai,api.anthropic.com,perplexity.ai,spotify.com,netflix.com,nflxvideo.net,disneyplus.com,disney-plus.net,dssott.com,hbomax.com,max.com,hulu.com,primevideo.com,gemini.google.com,bard.google.com,aistudio.google.com,makersuite.google.com,ai.google.dev,generativelanguage.googleapis.com}"
+#   - 默认启用 WARP（可通过环境变量关闭：WARP_ENABLE=0）
+#   - 默认仅对部分域名分流到 WARP（WARP_MODE=split），也可全局走 WARP（WARP_MODE=all）
+#   - 使用 sing-box Endpoint/WireGuard（system=true）创建系统接口，再用 direct+bind_interface 走 WARP
+#   - 自带端口探测 + 守护（超时自动切换端口并重启 sing-box），解决你遇到的“时好时坏/超时”
+WARP_ENABLE="${WARP_ENABLE:-1}"                 # 1=启用 0=禁用
+WARP_MODE="${WARP_MODE:-split}"                # split=仅分流域名走 WARP；all=全部走 WARP
+WARP_DOMAINS="${WARP_DOMAINS:-chatgpt.com,ws.chatgpt.com,openai.com,oaistatic.com,oaiusercontent.com,auth0.openai.com,api.openai.com,platform.openai.com,gemini.google.com,ai.google.com,bard.google.com}"
+WARP_INGRESS="${WARP_INGRESS:-162.159.193.10}" # Cloudflare WARP Anycast (可改：162.159.192.1 / 162.159.193.1 等)
+WARP_PORTS="${WARP_PORTS:-2408 500 1701 4500}" # 依次探测可用端口（常见：2408/500/1701/4500）
+WARP_MTU="${WARP_MTU:-1280}"                   # 建议 1280，减少碎片
+WARP_KEEPALIVE="${WARP_KEEPALIVE:-25}"         # persistent keepalive 秒
+WARP_IFNAME="${WARP_IFNAME:-sb-warp}"          # 系统 WireGuard 接口名
+WARP_TEST_URL="${WARP_TEST_URL:-https://www.cloudflare.com/cdn-cgi/trace}"
+WARP_WATCH_INTERVAL="${WARP_WATCH_INTERVAL:-120}"  # systemd timer/cron 检测间隔（秒）
 
-is_interactive(){ [[ -t 0 && -t 1 ]]; }
-
-prompt_yes_no(){
-  # prompt_yes_no "问题" "Y|N"  -> return 0 表示 yes
-  local q="${1:-}" def="${2:-N}" ans=""
-  local hint="[y/N]"
-  [[ "${def^^}" == "Y" ]] && hint="[Y/n]"
-  read -r -p "${q} ${hint} " ans || ans=""
-  ans="${ans//[[:space:]]/}"
-  if [[ -z "$ans" ]]; then ans="$def"; fi
-  case "${ans,,}" in
-    y|yes) return 0 ;;
-    n|no)  return 1 ;;
-    *) [[ "${def^^}" == "Y" ]] && return 0 || return 1 ;;
-  esac
-}
-
-configure_warp_choice(){
-  # 仅当 SB_WARP=auto 且为交互终端时询问；否则保持用户传入值（或自动默认关闭）
-  if [[ "${SB_WARP:-auto}" == "auto" ]]; then
-    if is_interactive; then
-      if prompt_yes_no "是否启用 Cloudflare WARP 作为额外出口（用于解锁/避免部分服务不可用）？" "N"; then
-        SB_WARP=1
-      else
-        SB_WARP=0
-      fi
-    else
-      SB_WARP=0
-    fi
-  fi
-
-  [[ "${SB_WARP:-0}" == "1" ]] || return 0
-
-  # 模式选择（仅交互时询问；非交互沿用环境变量/默认值）
-  if is_interactive; then
-    local mode_in=""
-    echo -e "${BLUE}[WARP] 模式选择：${PLAIN}"
-    echo "  1) 仅分流(推荐)：只有你填写的域名走 WARP"
-    echo "  2) 全局：所有流量都走 WARP"
-    read -r -p "请选择 1/2（默认 1）： " mode_in || mode_in=""
-    case "${mode_in}" in
-      2) SB_WARP_MODE="all" ;;
-      1|"") SB_WARP_MODE="selective" ;;
-      *) ;; # 保持原值
-    esac
-
-    if [[ "${SB_WARP_MODE:-selective}" != "all" ]]; then
-      echo -e "${BLUE}[WARP] 请输入要走 WARP 的域名后缀（逗号分隔）${PLAIN}"
-      echo "  例：openai.com,chatgpt.com,gemini.google.com,generativelanguage.googleapis.com"
-      echo "  直接回车 = 使用内置默认列表（已包含 OpenAI/Claude/Gemini/常见流媒体等）"
-      local d_in=""
-      read -r -p "域名后缀列表： " d_in || d_in=""
-      if [[ -n "${d_in//[[:space:]]/}" ]]; then
-        SB_WARP_DOMAINS="${d_in}"
-      fi
-    fi
-
-    echo -e "${GREEN}[WARP] 当前配置：SB_WARP=${SB_WARP}  SB_WARP_MODE=${SB_WARP_MODE}${PLAIN}"
-    [[ "${SB_WARP_MODE:-selective}" == "all" ]] || echo -e "${GREEN}[WARP] 分流域名：${SB_WARP_DOMAINS}${PLAIN}"
-  fi
-}
-
-configure_warp_choice
 
 # --- 系统识别 ---
-
 PKG_MGR="unknown"
 command -v apk >/dev/null 2>&1 && PKG_MGR="apk"
 command -v apt-get >/dev/null 2>&1 && PKG_MGR="apt"
@@ -167,152 +104,7 @@ install_pkgs(){
   esac
 }
 
-# --- WARP 辅助函数 ---
-json_array_from_csv(){
-  # 输入：逗号分隔字符串；输出：JSON 数组字符串（例如 ["a.com","b.com"]）
-  local csv="${1:-}"
-  if [[ -z "$csv" ]]; then echo '[]'; return 0; fi
-  echo "$csv" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF' | jq -R . | jq -s .
-}
-
-pick_free_port(){
-  # 选择一个尽量不冲突的本地监听端口（用于 WARP WireGuard endpoint）
-  local p i
-  for i in $(seq 1 80); do
-    p=$(( (RANDOM % 20000) + 40000 ))  # 40000-59999
-    if ! ss -H -lntup 2>/dev/null | awk '{print $5}' | grep -qE "[:\]]${p}$"; then
-      echo "$p"; return 0
-    fi
-  done
-  echo 51820
-}
-
-download_wgcf(){
-  # 下载 wgcf 到 /usr/local/bin/wgcf（如果已存在则跳过）
-  command -v wgcf >/dev/null 2>&1 && return 0
-  local arch="amd64" tag url
-  case "$(uname -m)" in
-    x86_64|amd64) arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    i386|i686) arch="386" ;;
-    armv7l|armv7) arch="armv7" ;;
-    *) arch="amd64" ;;
-  esac
-  tag="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r .tag_name 2>/dev/null || true)"
-  [[ -z "${tag:-}" || "$tag" == "null" ]] && tag="v2.2.30"
-  url="https://github.com/ViRb3/wgcf/releases/download/${tag}/wgcf_${tag#v}_linux_${arch}"
-  info "下载 wgcf：$url"
-  curl -fsSL "$url" -o /usr/local/bin/wgcf || return 1
-  chmod +x /usr/local/bin/wgcf || true
-  return 0
-}
-
-setup_warp(){
-  # 生成 WARP WireGuard 配置，并准备 sing-box endpoints / route 片段
-  # 输出变量：
-  #   WARP_OK=1/0
-  #   WARP_ENDPOINT_JSON（带结尾逗号）
-  #   WARP_ROUTE_RULE_BOTH（用于 both 模板，带结尾逗号）
-  #   WARP_ROUTE_RULE_SINGLE（用于 single 模板，不带结尾逗号）
-  WARP_OK=0
-  WARP_ENDPOINT_JSON=""
-  WARP_ROUTE_RULE_BOTH=""
-  WARP_ROUTE_RULE_SINGLE=""
-
-  [[ "${SB_WARP:-1}" == "0" ]] && return 0
-
-  download_wgcf || { warn "wgcf 下载失败，跳过 WARP"; return 0; }
-
-  local warp_dir="${CONF_DIR}/warp"
-  local profile="${warp_dir}/wgcf-profile.conf"
-  mkdir -p "$warp_dir"
-
-  # 如果没有 profile，则注册并生成（可重复执行，已有文件会跳过）
-  if [[ ! -s "$profile" ]]; then
-    info "生成 WARP 配置 (wgcf register/generate)"
-    ( cd "$warp_dir" && wgcf register --accept-tos >/dev/null 2>&1 && wgcf generate >/dev/null 2>&1 ) || {
-      warn "wgcf 注册/生成失败，跳过 WARP（可能是网络/Cloudflare 限制）"
-      return 0
-    }
-  fi
-
-  # 解析 profile
-  local pri pub psk endpoint host port
-  pri="$(grep -m1 '^PrivateKey' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' || true)"
-  pub="$(grep -m1 '^PublicKey' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' || true)"
-  psk="$(grep -m1 '^PresharedKey' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' || true)"
-  endpoint="$(grep -m1 '^Endpoint' "$profile" 2>/dev/null | awk -F'= ' '{print $2}' | tr -d '\r' || true)"
-
-  [[ -z "${pri:-}" || -z "${pub:-}" || -z "${endpoint:-}" ]] && { warn "解析 WARP 配置失败（缺少关键字段），跳过 WARP"; return 0; }
-  # Address / AllowedIPs（wgcf-profile 里是逗号分隔，需要拆成数组）
-  local addrs_json allowed_json addr_line allowed_line
-  addr_line="$(awk -F'= ' '/^Address/{print $2; exit}' "$profile" 2>/dev/null | tr -d '\r' || true)"
-  allowed_line="$(awk -F'= ' '/^AllowedIPs/{print $2; exit}' "$profile" 2>/dev/null | tr -d '\r' || true)"
-  addrs_json="$(printf '%s' "${addr_line}" | tr \, '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF' | jq -R . | jq -s . 2>/dev/null || echo '[]')"
-  allowed_json="$(printf '%s' "${allowed_line}" | tr \, '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF' | jq -R . | jq -s . 2>/dev/null || echo '[]')"
-  [[ -z "${addrs_json:-}" || "${addrs_json:-}" == "null" || "${addrs_json:-}" == "[]" ]] && addrs_json='[]'
-  [[ -z "${allowed_json:-}" || "${allowed_json:-}" == "null" || "${allowed_json:-}" == "[]" ]] && allowed_json='["0.0.0.0/0","::/0"]'
-
-  # Endpoint host/port（支持 host:port 与 [ipv6]:port）
-  host="$endpoint"; port="2408"
-  if [[ "$endpoint" =~ ^\[(.*)\]:(.*)$ ]]; then
-    host="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[2]}"
-  elif [[ "$endpoint" == *:* ]]; then
-    host="${endpoint%:*}"; port="${endpoint##*:}"
-  fi
-  # 避免在 SB_WARP_MODE=all 时产生“走自己”的递归：让 WARP 自己的拨号固定走 direct
-  local detour_tag="direct"
-  [[ "${OUT_MODE:-single}" == "both" ]] && detour_tag="direct-v4"
-
-  local psk_line=""
-  [[ -n "${psk:-}" ]] && psk_line="          \"pre_shared_key\": \"${psk}\","
-
-  # 分流域名列表
-  local domains_json
-  domains_json="$(json_array_from_csv "${SB_WARP_DOMAINS:-}")"
-  [[ "${domains_json:-}" == "[]" ]] && domains_json='["openai.com","chatgpt.com"]'
-
-  # 路由模式：selective / all
-  if [[ "${SB_WARP_MODE:-selective}" == "all" ]]; then
-    WARP_ROUTE_RULE_SINGLE='      { "outbound": "warp" }'
-    WARP_ROUTE_RULE_BOTH='      { "outbound": "warp" },'
-  else
-    WARP_ROUTE_RULE_SINGLE="      { \"domain_suffix\": ${domains_json}, \"outbound\": \"warp\" }"
-    WARP_ROUTE_RULE_BOTH="      { \"domain_suffix\": ${domains_json}, \"outbound\": \"warp\" },"
-  fi
-
-  # endpoints JSON（sing-box 1.11+ endpoint/wireguard）
-  WARP_ENDPOINT_JSON="$(cat <<JSON
-  "endpoints": [
-    {
-      "type": "wireguard",
-      "tag": "warp",
-      "system": false,
-      "mtu": 1280,
-      "address": ${addrs_json},
-      "private_key": "${pri}",
-      "detour": "${detour_tag}",
-      "peers": [
-        {
-          "address": "${host}",
-          "port": ${port},
-          "public_key": "${pub}",
-${psk_line}
-          "allowed_ips": ${allowed_json},
-          "persistent_keepalive_interval": 25
-        }
-      ],
-      "udp_timeout": "5m"
-    }
-  ],
-JSON
-)"
-  WARP_OK=1
-  ok "WARP 已就绪：endpoint=${host}:${port} 模式=${SB_WARP_MODE}"
-}
-
 # --- 用户/组 ---
-
 group_exists(){
   local g="$1"
   if command -v getent >/dev/null 2>&1; then getent group "$g" >/dev/null 2>&1
@@ -375,6 +167,207 @@ default_iface() {
   [[ -z "$iface" ]] && iface="eth0"
   echo "$iface"
 }
+# --- WARP 工具 ---
+_arch_norm(){
+  local a
+  a="$(uname -m 2>/dev/null || echo x86_64)"
+  case "$a" in
+    x86_64|amd64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    armv7l|armv7) echo "armv7" ;;
+    i386|i686) echo "386" ;;
+    *) echo "amd64" ;;
+  esac
+}
+# csv/space -> JSON array string, e.g. "a,b c" -> ["a","b","c"]
+_to_json_array(){
+  local s="$1"
+  s="${s//,/ }"
+  local out=""
+  local x
+  for x in $s; do
+    x="${x#"${x%%[![:space:]]*}"}"; x="${x%"${x##*[![:space:]]}"}"
+    [[ -z "$x" ]] && continue
+    out+="\"$x\","
+  done
+  out="${out%,}"
+  echo "[${out}]"
+}
+
+_install_wgcf(){
+  command -v wgcf >/dev/null 2>&1 && return 0
+  local arch ver url tmp
+  arch="$(_arch_norm)"
+  ver="$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r '.tag_name' 2>/dev/null | sed 's/^v//')"
+  [[ -z "$ver" || "$ver" == "null" ]] && ver="2.2.30"  # 兜底：脚本生成时的已知版本
+  url="https://github.com/ViRb3/wgcf/releases/download/v${ver}/wgcf_${ver}_linux_${arch}"
+  tmp="/tmp/wgcf.bin"
+  info "下载 wgcf v${ver} (${arch})..."
+  curl -fL --retry 3 --retry-delay 1 -o "$tmp" "$url" >/dev/null 2>&1 || { err "wgcf 下载失败：$url"; return 1; }
+  install -m 0755 "$tmp" /usr/local/bin/wgcf || return 1
+  rm -f "$tmp" >/dev/null 2>&1 || true
+  ok "wgcf 安装完成"
+  return 0
+}
+
+# 生成/复用 WARP 账号与 profile（WireGuard conf）
+_prepare_warp_profile(){
+  mkdir -p "$CONF_DIR/warp" >/dev/null 2>&1 || true
+  local dir="$CONF_DIR/warp"
+  local acct="$dir/wgcf-account.toml"
+  local prof="$dir/wgcf-profile.conf"
+
+  # 已存在就直接复用
+  if [[ -s "$acct" && -s "$prof" ]]; then
+    ok "检测到现有 WARP 账号与 profile，直接复用"
+    return 0
+  fi
+
+  _install_wgcf || return 1
+  pushd "$dir" >/dev/null 2>&1 || return 1
+
+  if [[ ! -s "$acct" ]]; then
+    info "注册 WARP 账号（wgcf register）..."
+    yes | wgcf register >/dev/null 2>&1 || { popd >/dev/null 2>&1 || true; err "wgcf register 失败"; return 1; }
+  fi
+
+  info "生成 WireGuard profile（wgcf generate）..."
+  wgcf generate >/dev/null 2>&1 || { popd >/dev/null 2>&1 || true; err "wgcf generate 失败"; return 1; }
+
+  # wgcf 默认输出 wgcf-profile.conf
+  [[ -s "wgcf-profile.conf" ]] || { popd >/dev/null 2>&1 || true; err "未生成 wgcf-profile.conf"; return 1; }
+
+  chmod 600 "$acct" "wgcf-profile.conf" >/dev/null 2>&1 || true
+  popd >/dev/null 2>&1 || true
+  ok "WARP profile 准备完成：$prof"
+  return 0
+}
+
+# 从 wgcf-profile.conf 解析关键字段，导出到全局变量：WARP_*_VAL
+_parse_warp_profile(){
+  local prof="$CONF_DIR/warp/wgcf-profile.conf"
+  [[ -s "$prof" ]] || return 1
+
+  # 基本字段
+  WARP_PRIVATE_KEY_VAL="$(grep -E '^\s*PrivateKey\s*=' "$prof" | head -n1 | cut -d= -f2- | tr -d ' "\r')"
+  WARP_PUBLIC_KEY_VAL="$(grep -E '^\s*PublicKey\s*=' "$prof" | head -n1 | cut -d= -f2- | tr -d ' "\r')"
+  WARP_PRESHARED_KEY_VAL="$(grep -E '^\s*PresharedKey\s*=' "$prof" | head -n1 | cut -d= -f2- | tr -d ' "\r')"
+  local addr_line
+  addr_line="$(grep -E '^\s*Address\s*=' "$prof" | head -n1 | cut -d= -f2- | tr -d '\r' )"
+  addr_line="${addr_line//\"/}"
+  addr_line="${addr_line//,/ }"
+  WARP_ADDRESS_JSON="$(_to_json_array "$addr_line")"
+
+  local allow_line
+  allow_line="$(grep -E '^\s*AllowedIPs\s*=' "$prof" | head -n1 | cut -d= -f2- | tr -d '\r' )"
+  allow_line="${allow_line//\"/}"
+  allow_line="${allow_line//,/ }"
+  WARP_ALLOWEDIPS_JSON="$(_to_json_array "$allow_line")"
+  [[ "$WARP_ALLOWEDIPS_JSON" == "[]" ]] && WARP_ALLOWEDIPS_JSON='["0.0.0.0/0","::/0"]'
+
+  # Reserved（可能没有）
+  local res
+  res="$(grep -E '^\s*Reserved\s*=' "$prof" | head -n1 | cut -d= -f2- | tr -d ' "\r' || true)"
+  if [[ -n "${res:-}" ]]; then
+    # 形如：1,2,3 或 1 2 3
+    res="${res//,/ }"
+    local a b c
+    a="$(echo "$res" | awk '{print $1}')"
+    b="$(echo "$res" | awk '{print $2}')"
+    c="$(echo "$res" | awk '{print $3}')"
+    if [[ -n "$a" && -n "$b" && -n "$c" ]]; then
+      WARP_RESERVED_JSON="[$a,$b,$c]"
+    else
+      WARP_RESERVED_JSON=""
+    fi
+  else
+    WARP_RESERVED_JSON=""
+  fi
+
+  [[ -n "${WARP_PRIVATE_KEY_VAL:-}" && -n "${WARP_PUBLIC_KEY_VAL:-}" ]] || return 1
+  return 0
+}
+
+# 用临时 sing-box socks 测试某个端口是否可用（返回 0=可用）
+_warp_try_port(){
+  local port="$1"
+  local tmpc="/tmp/sb-warp-test.json"
+  local tmplog="/tmp/sb-warp-test.log"
+  local tmpsocks_port=17890
+
+  # 清理残留接口
+  ip link del "$WARP_IFNAME" >/dev/null 2>&1 || true
+
+  cat > "$tmpc" <<EOF
+{
+  "log": { "level": "warn", "timestamp": true },
+  "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "warp-ep",
+      "system": true,
+      "name": "${WARP_IFNAME}",
+      "mtu": ${WARP_MTU},
+      "address": ${WARP_ADDRESS_JSON},
+      "private_key": "${WARP_PRIVATE_KEY_VAL}",
+      "peers": [
+        {
+          "address": "${WARP_INGRESS}",
+          "port": ${port},
+          "public_key": "${WARP_PUBLIC_KEY_VAL}",
+          "pre_shared_key": "${WARP_PRESHARED_KEY_VAL}",
+          "allowed_ips": ${WARP_ALLOWEDIPS_JSON},
+          "persistent_keepalive_interval": ${WARP_KEEPALIVE}${WARP_RESERVED_JSON:+, "reserved": ${WARP_RESERVED_JSON}}
+        }
+      ]
+    }
+  ],
+  "inbounds": [
+    { "type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": ${tmpsocks_port} }
+  ],
+  "route": { "auto_detect_interface": true, "final": "warp" },
+  "outbounds": [
+    { "type": "direct", "tag": "warp", "bind_interface": "${WARP_IFNAME}", "domain_resolver": { "server": "local", "strategy": "prefer_ipv4" } },
+    { "type": "direct", "tag": "direct" }
+  ]
+}
+EOF
+
+  rm -f "$tmplog" >/dev/null 2>&1 || true
+
+  ( "$INSTALL_PATH" run -c "$tmpc" >/dev/null 2>>"$tmplog" ) &
+  local pid=$!
+  sleep 1
+
+  timeout 9 curl -fsSL --socks5-hostname "127.0.0.1:${tmpsocks_port}" --connect-timeout 4 --max-time 8 "$WARP_TEST_URL" >/dev/null 2>&1
+  local rc=$?
+
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+
+  ip link del "$WARP_IFNAME" >/dev/null 2>&1 || true
+  rm -f "$tmpc" >/dev/null 2>&1 || true
+
+  return $rc
+}
+
+# 选择一个可用端口，导出 WARP_PORT_SELECTED
+_select_warp_port(){
+  local p
+  for p in $WARP_PORTS; do
+    info "WARP 端口探测：${WARP_INGRESS}:${p} ..."
+    if _warp_try_port "$p"; then
+      WARP_PORT_SELECTED="$p"
+      ok "WARP 端口可用：${p}"
+      return 0
+    fi
+    warn "WARP 端口不可用：${p}"
+  done
+  err "所有 WARP 端口探测失败（${WARP_PORTS}），你可以改 WARP_INGRESS 或 WARP_PORTS 再试"
+  return 1
+}
+
 
 # --- 性能调优 ---
 apply_tuning() {
@@ -514,7 +507,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v3.0        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.7 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
@@ -839,6 +832,101 @@ ok "sing-box 已安装: $SB_TAG"
 # [5] 生成 config.json
 # ============================================================
 echo -e "${YELLOW}[5/12] 生成配置文件...${PLAIN}"
+# --- WARP 初始化（生成/复用账号、探测端口、准备注入变量）---
+WARP_ENDPOINTS_BLOCK=""
+WARP_OUTBOUNDS_BLOCK=""
+WARP_ROUTE_RULES_BOTH=""
+WARP_ROUTE_RULES_SINGLE=""
+ROUTE_FINAL_BOTH="direct-v4"
+ROUTE_FINAL_SINGLE="direct"
+SINGLE_BLOCK_RULE='{ "ip_version": 6, "outbound": "block" }'
+
+if [[ "${WARP_ENABLE}" == "1" ]]; then
+  _prepare_warp_profile || { warn "WARP 初始化失败，将以不启用 WARP 继续"; WARP_ENABLE="0"; }
+fi
+
+if [[ "${WARP_ENABLE}" == "1" ]]; then
+  _parse_warp_profile || { warn "解析 WARP profile 失败，将以不启用 WARP 继续"; WARP_ENABLE="0"; }
+fi
+
+if [[ "${WARP_ENABLE}" == "1" ]]; then
+  _select_warp_port || { warn "WARP 端口探测失败，将以不启用 WARP 继续"; WARP_ENABLE="0"; }
+fi
+
+# single 栈阻断规则（保持原逻辑）
+if [[ "$OUT_MODE" == "ipv4" ]]; then
+  SINGLE_BLOCK_RULE='{ "ip_version": 6, "outbound": "block" }'
+elif [[ "$OUT_MODE" == "ipv6" ]]; then
+  SINGLE_BLOCK_RULE='{ "ip_version": 4, "outbound": "block" }'
+else
+  SINGLE_BLOCK_RULE='{ "ip_version": 6, "outbound": "block" }'
+fi
+
+if [[ "${WARP_ENABLE}" == "1" ]]; then
+  # endpoints 注入块（Endpoint/WireGuard -> system 接口）
+  WARP_ENDPOINTS_BLOCK=$(cat <<EOX
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "warp-ep",
+      "system": true,
+      "name": "${WARP_IFNAME}",
+      "mtu": ${WARP_MTU},
+      "address": ${WARP_ADDRESS_JSON},
+      "private_key": "${WARP_PRIVATE_KEY_VAL}",
+      "peers": [
+        {
+          "address": "${WARP_INGRESS}",
+          "port": ${WARP_PORT_SELECTED},
+          "public_key": "${WARP_PUBLIC_KEY_VAL}",
+          "pre_shared_key": "${WARP_PRESHARED_KEY_VAL}",
+          "allowed_ips": ${WARP_ALLOWEDIPS_JSON},
+          "persistent_keepalive_interval": ${WARP_KEEPALIVE}${WARP_RESERVED_JSON:+,
+          "reserved": ${WARP_RESERVED_JSON}}
+        }
+      ]
+    }
+  ],
+EOX
+)
+
+  # 走 WARP 的 outbound：direct + bind_interface
+  WARP_OUTBOUNDS_BLOCK=$(cat <<EOX
+    {
+      "type": "direct",
+      "tag": "warp",
+      "bind_interface": "${WARP_IFNAME}",
+      "domain_resolver": { "server": "local", "strategy": "prefer_ipv4" }
+    },
+EOX
+)
+
+  # route rules（务必放最前面）
+  _WARP_DOMAINS_JSON="$(_to_json_array "$WARP_DOMAINS")"
+  if [[ "${WARP_MODE}" == "all" ]]; then
+    ROUTE_FINAL_BOTH="warp"
+    ROUTE_FINAL_SINGLE="warp"
+    WARP_ROUTE_RULES_BOTH=$(cat <<'EOX'
+      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4","vless-reality-v6","hy2-in-v6","tuic-in-v6","anytls-in-v6","shadowtls-in-v6","vless-argo-in"], "outbound": "warp" },
+EOX
+)
+    WARP_ROUTE_RULES_SINGLE=$(cat <<'EOX'
+      { "inbound": ["vless-reality","hy2-in","tuic-in","anytls-in","shadowtls-in","vless-argo-in"], "outbound": "warp" },
+EOX
+)
+  else
+    ROUTE_FINAL_BOTH="direct-v4"
+    ROUTE_FINAL_SINGLE="direct"
+    WARP_ROUTE_RULES_BOTH=$(cat <<EOX
+      { "domain_suffix": ${_WARP_DOMAINS_JSON}, "outbound": "warp" },
+EOX
+)
+    WARP_ROUTE_RULES_SINGLE="$WARP_ROUTE_RULES_BOTH"
+  fi
+
+  ok "WARP 已启用：接口 ${WARP_IFNAME}，入口 ${WARP_INGRESS}:${WARP_PORT_SELECTED}，模式 ${WARP_MODE}"
+fi
+
 
 # --- [Fix] 重跑脚本时优先复用旧配置里的关键凭据/密钥，避免客户端仍用旧信息导致 unknown user / hmac mismatch ---
 OLD_CONF="$CONF_DIR/config.json"
@@ -961,41 +1049,20 @@ if [[ -n "$ARGO_TOKEN" && -n "$ARGO_DOMAIN" ]]; then
     }"
 fi
 
-
-# ============================================================
-# [WARP] 生成 WARP endpoint（可选）
-# ============================================================
-setup_warp
-
-# 单栈模式：如果启用了 WARP，则给 route 加入分流/全局规则
-if [[ "${WARP_OK:-0}" -eq 1 ]]; then
-  ROUTE_SINGLE_LINE="$(cat <<EOF
-  "route": {
-    "auto_detect_interface": true,
-    "rules": [
-${WARP_ROUTE_RULE_SINGLE}
-    ],
-    "final": "direct"
-  },
-EOF
-)"
-fi
-
 if [[ "$OUT_MODE" == "both" ]]; then
 cat > "$CONF_DIR/config.json" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
   "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
-  ${WARP_ENDPOINT_JSON}  "route": {
+${WARP_ENDPOINTS_BLOCK}  "route": {
     "auto_detect_interface": true,
     "rules": [
-${WARP_ROUTE_RULE_BOTH}
-      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4"], "ip_version": 6, "outbound": "block" },
+${WARP_ROUTE_RULES_BOTH}      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4"], "ip_version": 6, "outbound": "block" },
       { "inbound": ["vless-reality-v6","hy2-in-v6","tuic-in-v6","anytls-in-v6","shadowtls-in-v6"], "outbound": "direct-v6" },
       { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4"], "outbound": "direct-v4" },
       { "inbound": ["vless-argo-in"], "outbound": "direct-v4" }
     ],
-    "final": "direct-v4"
+    "final": "${ROUTE_FINAL_BOTH}"
   },
   "inbounds": [
     {
@@ -1036,91 +1103,68 @@ ${WARP_ROUTE_RULE_BOTH}
       "type": "hysteria2",
       "tag": "hy2-in-v4",
       "listen": "${LISTEN_V4}",
-      "listen_port": ${P_HY2_4},
+      "listen_port": ${P_HY24},
       "users": [{ "password": "${HY2_PASS}" }],
       "ignore_client_bandwidth": true,
-      "tls": {
-        "enabled": true,
-        "alpn": ["h3"],
-        "certificate_path": "${CERT_PATH}",
-        "key_path": "${KEY_PATH}"
-      }
+      "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
       "type": "hysteria2",
       "tag": "hy2-in-v6",
       "listen": "${LISTEN_V6}",
-      "listen_port": ${P_HY2_6},
+      "listen_port": ${P_HY26},
       "users": [{ "password": "${HY2_PASS}" }],
       "ignore_client_bandwidth": true,
-      "tls": {
-        "enabled": true,
-        "alpn": ["h3"],
-        "certificate_path": "${CERT_PATH}",
-        "key_path": "${KEY_PATH}"
-      }
-    }${HOP_EXTRA_INBOUNDS},
+      "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
+    },
     {
       "type": "tuic",
       "tag": "tuic-in-v4",
       "listen": "${LISTEN_V4}",
       "listen_port": ${P_TUIC4},
-      "users": [{ "uuid": "${TUIC_UUID}", "password": "${TUIC_PASS}" }],
+      "users": [{ "uuid": "${UUID}", "password": "${TUIC_PASS}" }],
       "congestion_control": "bbr",
-      "tls": {
-        "enabled": true,
-        "alpn": ["h3"],
-        "certificate_path": "${CERT_PATH}",
-        "key_path": "${KEY_PATH}"
-      }
+      "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
       "type": "tuic",
       "tag": "tuic-in-v6",
       "listen": "${LISTEN_V6}",
       "listen_port": ${P_TUIC6},
-      "users": [{ "uuid": "${TUIC_UUID}", "password": "${TUIC_PASS}" }],
+      "users": [{ "uuid": "${UUID}", "password": "${TUIC_PASS}" }],
       "congestion_control": "bbr",
-      "tls": {
-        "enabled": true,
-        "alpn": ["h3"],
-        "certificate_path": "${CERT_PATH}",
-        "key_path": "${KEY_PATH}"
-      }
+      "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
       "type": "anytls",
       "tag": "anytls-in-v4",
       "listen": "${LISTEN_V4}",
       "listen_port": ${P_ANYTLS4},
-      "users": [{ "name": "user", "password": "${ANYTLS_PASS}" }],
-      "padding_scheme": [],
-      "tls": {
-        "enabled": true,
-        "alpn": ["h2", "http/1.1"],
-        "certificate_path": "${CERT_PATH}",
-        "key_path": "${KEY_PATH}"
-      }
+      "users": [{ "password": "${ANYTLS_PASS}" }],
+      "tls": { "enabled": true, "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
       "type": "anytls",
       "tag": "anytls-in-v6",
       "listen": "${LISTEN_V6}",
       "listen_port": ${P_ANYTLS6},
-      "users": [{ "name": "user", "password": "${ANYTLS_PASS}" }],
-      "padding_scheme": [],
-      "tls": {
-        "enabled": true,
-        "alpn": ["h2", "http/1.1"],
-        "certificate_path": "${CERT_PATH}",
-        "key_path": "${KEY_PATH}"
-      }
+      "users": [{ "password": "${ANYTLS_PASS}" }],
+      "tls": { "enabled": true, "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
       "type": "shadowsocks",
-      "tag": "st-ss-local",
+      "tag": "st-ss-local-v4",
       "listen": "127.0.0.1",
-      "listen_port": ${ST_LOCAL_PORT},
+      "listen_port": ${ST_LOCAL4},
+      "method": "${ST_SS_METHOD}",
+      "password": "${ST_SS_KEY}",
+      "network": "tcp"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "st-ss-local-v6",
+      "listen": "127.0.0.1",
+      "listen_port": ${ST_LOCAL6},
       "method": "${ST_SS_METHOD}",
       "password": "${ST_SS_KEY}",
       "network": "tcp"
@@ -1133,7 +1177,7 @@ ${WARP_ROUTE_RULE_BOTH}
       "version": ${ST_VERSION},
       "users": [{ "password": "${ST_PASS}" }],
       "handshake": { "server": "${ST_HANDSHAKE_HOST}", "server_port": ${ST_HANDSHAKE_PORT} },
-      "detour": "st-ss-local"
+      "detour": "st-ss-local-v4"
     },
     {
       "type": "shadowtls",
@@ -1143,15 +1187,15 @@ ${WARP_ROUTE_RULE_BOTH}
       "version": ${ST_VERSION},
       "users": [{ "password": "${ST_PASS}" }],
       "handshake": { "server": "${ST_HANDSHAKE_HOST}", "server_port": ${ST_HANDSHAKE_PORT} },
-      "detour": "st-ss-local"
+      "detour": "st-ss-local-v6"
     }${ARGO_INB}
   ],
   "outbounds": [
-    {
+${WARP_OUTBOUNDS_BLOCK}    {
       "type": "direct",
       "tag": "direct-v4",
       "inet4_bind_address": "${LOCAL_IPV4}",
-      "domain_resolver": { "server": "local", "strategy": "ipv4_only" }
+      "domain_resolver": { "server": "local", "strategy": "prefer_ipv4" }
     },
     {
       "type": "direct",
@@ -1168,7 +1212,13 @@ cat > "$CONF_DIR/config.json" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
   "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
-  ${WARP_ENDPOINT_JSON}  ${ROUTE_SINGLE_LINE}
+${WARP_ENDPOINTS_BLOCK}  "route": {
+    "auto_detect_interface": true,
+    "rules": [
+${WARP_ROUTE_RULES_SINGLE}      ${SINGLE_BLOCK_RULE}
+    ],
+    "final": "${ROUTE_FINAL_SINGLE}"
+  },
   "inbounds": [
     {
       "type": "vless",
@@ -1194,40 +1244,24 @@ cat > "$CONF_DIR/config.json" <<EOF
       "listen_port": ${P_HY2},
       "users": [{ "password": "${HY2_PASS}" }],
       "ignore_client_bandwidth": true,
-      "tls": {
-        "enabled": true,
-        "alpn": ["h3"],
-        "certificate_path": "${CERT_PATH}",
-        "key_path": "${KEY_PATH}"
-      }
-    }${HOP_EXTRA_INBOUNDS},
+      "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
+    },
     {
       "type": "tuic",
       "tag": "tuic-in",
       "listen": "${LISTEN_SINGLE}",
       "listen_port": ${P_TUIC},
-      "users": [{ "uuid": "${TUIC_UUID}", "password": "${TUIC_PASS}" }],
+      "users": [{ "uuid": "${UUID}", "password": "${TUIC_PASS}" }],
       "congestion_control": "bbr",
-      "tls": {
-        "enabled": true,
-        "alpn": ["h3"],
-        "certificate_path": "${CERT_PATH}",
-        "key_path": "${KEY_PATH}"
-      }
+      "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
       "type": "anytls",
       "tag": "anytls-in",
       "listen": "${LISTEN_SINGLE}",
       "listen_port": ${P_ANYTLS},
-      "users": [{ "name": "user", "password": "${ANYTLS_PASS}" }],
-      "padding_scheme": [],
-      "tls": {
-        "enabled": true,
-        "alpn": ["h2", "http/1.1"],
-        "certificate_path": "${CERT_PATH}",
-        "key_path": "${KEY_PATH}"
-      }
+      "users": [{ "password": "${ANYTLS_PASS}" }],
+      "tls": { "enabled": true, "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
       "type": "shadowsocks",
@@ -1250,7 +1284,7 @@ cat > "$CONF_DIR/config.json" <<EOF
     }${ARGO_INB}
   ],
   "outbounds": [
-    {
+${WARP_OUTBOUNDS_BLOCK}    {
       "type": "direct",
       "tag": "direct",
 ${DIRECT_INET4_LINE}
@@ -1595,6 +1629,14 @@ SB_HOP_MODE="${HOP_MODE}"
 SB_HOP_MULTI_ENABLED="${HOP_MULTI_ENABLED}"
 SB_HOP_REDIRECT_ENABLED="${HOP_REDIRECT_ENABLED}"
 SB_HOP_ENGINE="${HOP_ENGINE}"
+SB_WARP_ENABLE="${WARP_ENABLE}"
+SB_WARP_MODE="${WARP_MODE}"
+SB_WARP_DOMAINS="${WARP_DOMAINS}"
+SB_WARP_INGRESS="${WARP_INGRESS}"
+SB_WARP_PORTS="${WARP_PORTS}"
+SB_WARP_PORT="${WARP_PORT_SELECTED:-}"
+SB_WARP_IFNAME="${WARP_IFNAME}"
+
 EOF
 chmod 600 "$STATE_FILE"
 
@@ -1635,6 +1677,114 @@ EOF
   chmod +x /etc/init.d/sing-box
 fi
 service_enable_restart
+
+# --- WARP 自愈守护：定时检测接口可用性，超时则自动切换端口并重启 sing-box ---
+setup_warp_watchdog(){
+  [[ "${WARP_ENABLE}" == "1" ]] || return 0
+  [[ -n "${WARP_PORT_SELECTED:-}" ]] || return 0
+
+  cat > /usr/local/bin/sb-warp-watch.sh <<'EOS'
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONF_DIR="/etc/sing-box"
+CONF_FILE="${CONF_DIR}/config.json"
+STATE_FILE="${CONF_DIR}/.sb_state"
+
+# 读取状态
+if [[ -s "$STATE_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$STATE_FILE"
+fi
+
+WARP_IFNAME="${SB_WARP_IFNAME:-sb-warp}"
+WARP_INGRESS="${SB_WARP_INGRESS:-162.159.193.10}"
+WARP_PORTS="${SB_WARP_PORTS:-2408 500 1701 4500}"
+WARP_PORT="${SB_WARP_PORT:-}"
+TEST_URL="${WARP_TEST_URL:-https://www.cloudflare.com/cdn-cgi/trace}"
+
+# 如果接口不存在，先退出（通常表示 sing-box 未运行）
+ip link show "$WARP_IFNAME" >/dev/null 2>&1 || exit 0
+
+# 测试：强制走 WARP 接口
+if timeout 10 curl -fsSL --interface "$WARP_IFNAME" --connect-timeout 4 --max-time 9 "$TEST_URL" >/dev/null 2>&1; then
+  exit 0
+fi
+
+# 失败：轮换端口
+ports=()
+for p in $WARP_PORTS; do ports+=("$p"); done
+if [[ ${#ports[@]} -eq 0 ]]; then exit 0; fi
+
+next="${ports[0]}"
+if [[ -n "${WARP_PORT}" ]]; then
+  for i in "${!ports[@]}"; do
+    if [[ "${ports[$i]}" == "$WARP_PORT" ]]; then
+      j=$(( (i+1) % ${#ports[@]} ))
+      next="${ports[$j]}"
+      break
+    fi
+  done
+fi
+
+tmp="$(mktemp)"
+# 更新 endpoints -> peers[0].port
+jq --argjson p "$next" '(.endpoints[] | select(.tag=="warp-ep") | .peers[0].port) = $p' "$CONF_FILE" > "$tmp" || { rm -f "$tmp"; exit 0; }
+mv "$tmp" "$CONF_FILE"
+
+# 更新 state
+if [[ -s "$STATE_FILE" ]]; then
+  sed -i "s/^SB_WARP_PORT=.*/SB_WARP_PORT=\\"$next\\"/g" "$STATE_FILE" 2>/dev/null || true
+fi
+
+# 重启 sing-box
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl restart sing-box >/dev/null 2>&1 || true
+else
+  rc-service sing-box restart >/dev/null 2>&1 || true
+fi
+EOS
+  chmod +x /usr/local/bin/sb-warp-watch.sh
+
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /etc/systemd/system ]]; then
+    cat > /etc/systemd/system/sb-warp-watch.service <<EOF
+[Unit]
+Description=Sing-box WARP watchdog (auto rotate ports)
+After=sing-box.service
+Wants=sing-box.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sb-warp-watch.sh
+EOF
+
+    cat > /etc/systemd/system/sb-warp-watch.timer <<EOF
+[Unit]
+Description=Run Sing-box WARP watchdog periodically
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=${WARP_WATCH_INTERVAL}
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable --now sb-warp-watch.timer >/dev/null 2>&1 || true
+    ok "已启用 WARP 守护：sb-warp-watch.timer（间隔 ${WARP_WATCH_INTERVAL}s）"
+  else
+    # OpenRC/无 systemd：写入 cron
+    cat > /etc/cron.d/sb-warp-watch <<EOF
+*/2 * * * * root /usr/local/bin/sb-warp-watch.sh >/dev/null 2>&1
+EOF
+    ok "已写入 cron 守护：/etc/cron.d/sb-warp-watch"
+  fi
+}
+
+setup_warp_watchdog
+
 
 # ============================================================
 # [12] SB 脚本
