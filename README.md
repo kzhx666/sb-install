@@ -1,205 +1,282 @@
-# sb-install（Sing-box NAT/LXC/Alpine Ultimate）v2.0
+# Sing-box 终极定制版（含 Cloudflare WARP 分流 + 自愈）
 
-一键部署 **sing-box**：  
-**Reality / Hysteria2（端口跳跃范围） / TUIC / AnyTLS / ShadowTLS + 可选 Argo**  
-适配 **NAT VPS / LXC / Alpine(OpenRC)**，支持 **IPv4 / IPv6 / 双栈输出**，并支持 **“优先 IPv6（可回落 IPv4）”出站策略**
+一个面向 **VPS/服务器** 的一键安装脚本：自动安装 sing-box、生成完整配置、开放防火墙端口、输出节点订阅信息，并可选开启 **Cloudflare WARP** 作为分流出口（支持端口/入口轮换自愈，解决“WARP 分流网站时好时坏/超时”）。
 
----
-
-## 功能概览
-
-- ✅ **VLESS Reality**（TCP）
-- ✅ **Hysteria2**（UDP）
-- ✅ 支持 **端口跳跃范围**（URL 使用 `mport=起-止`）
-- ✅ 范围跳跃稳定实现：将跳跃范围 UDP 端口 **REDIRECT 到 Hy2 主端口**（nft/iptables 优先）
-- ✅ **TUIC**（UDP）
-- ✅ **AnyTLS**
-- ✅ **ShadowTLS v3**（mihomo 最兼容：`type: ss + plugin: shadow-tls`）
-- ✅ **Cloudflare Argo（可选）**：本地 WS `127.0.0.1:10086` + cloudflared
-- ✅ **双栈输出**：可选输出 IPv4 / IPv6 / Both（v4 与 v6 端口**顺延分配**不冲突）
+> 适合：需要在同一台 VPS 上快速部署多协议节点，同时对 **ChatGPT / Gemini / OpenAI** 等站点进行 WARP 分流解锁的人。
 
 ---
 
-## 出站策略：优先 IPv6（可回落 IPv4）
+## 功能一览
 
-脚本在 `direct-v6` 出站使用 **prefer_ipv6**，在 `direct-v4` 使用 **prefer_ipv4**。  
-含义是：
-
-- 目标站点同时有 IPv4/IPv6（A/AAAA）时：**优先走 IPv6**
-- 目标站点只有 IPv4（仅 A）时：会回落走 IPv4（在 **双栈 VPS** 上可用）
-- 如果你的 VPS **只有 IPv6**（没有 IPv4 出站路由）：访问 IPv4-only 站点仍可能失败，除非上游提供 **NAT64/464XLAT/DNS64**。
+- ✅ 自动安装最新 sing-box（二进制下载安装到 `/usr/local/bin/sing-box`）
+- ✅ 自动生成 `/etc/sing-box/config.json`（可重复运行脚本，尽量复用旧配置关键凭据）
+- ✅ 协议入站（按脚本生成的端口）：
+  - VLESS + REALITY（TCP）
+  - Hysteria2（UDP/QUIC）
+  - TUIC（UDP/QUIC）
+  - AnyTLS（TCP）
+  - ShadowTLS（TCP，带本地 Shadowsocks detour）
+- ✅ 证书模式：
+  - ACME（域名 + DNS/HTTP-01）
+  - 自签（无域名，SNI 伪装）
+- ✅ 可选 Cloudflare Argo（本地 VLESS+WS 入站供 Tunnel 反代）
+- ✅ 防火墙自动放行（优先 ufw / firewalld，其次 iptables/ip6tables，最后 nft 兜底）
+- ✅ 自动生成 `sb` 命令：一键打印节点链接，并生成 Mihomo YAML：
+  - `/usr/local/bin/sb`
+  - `/etc/sing-box/mihomo_proxies.yaml`
+- ✅ **WARP 分流（重点）**
+  - 使用 `wgcf` 自动生成/复用 WARP WireGuard profile
+  - sing-box `endpoint/wireguard (system=true)` 创建系统接口 `sb-warp`
+  - `direct` 出站通过 `bind_interface=sb-warp` 强制走 WARP
+  - 支持 `split`（仅分流域名）或 `all`（全局走 WARP）
+  - 自带端口探测（2408/500/1701/4500）+ **入口/端口轮换自愈**（systemd timer / cron）
 
 ---
 
 ## 支持系统
 
 - Debian / Ubuntu（systemd）
-- Alpine Linux（OpenRC）
-- 其他发行版（yum/dnf）尽力兼容（以 Debian/Alpine 为主测试）
+- CentOS / Alma / Rocky（systemd）
+- Fedora（systemd）
+- Alpine（OpenRC）
+
+> 必须 root 运行。
 
 ---
 
-## 前置依赖（建议先装）
+## 快速开始
 
-脚本会自动安装依赖，但建议确保至少有 **curl + bash**：
+### 0）前置依赖：安装 curl + bash（强烈建议先执行）
 
-### Debian / Ubuntu
+**Debian/Ubuntu**
 ```bash
-apt-get update -y
-apt-get install -y curl bash
+apt-get update -y && apt-get install -y curl bash ca-certificates
 ```
 
-### Alpine
+**CentOS/Alma/Rocky**
 ```bash
-apk add --no-cache bash curl
+yum install -y curl bash ca-certificates
 ```
 
----
-
-## 一键安装
-
-> 仓库默认：`https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh`
-
-### Debian / Ubuntu / systemd
+**Fedora**
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
+dnf install -y curl bash ca-certificates
 ```
 
-### Alpine / OpenRC
+**Alpine**
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
+apk add --no-cache curl bash ca-certificates
 ```
 
 ---
 
-## 安装交互项（会问什么）
+### 1）安装（推荐：下载后执行）
 
-1. **输出地址选择**（仅双栈 VPS）：IPv4 / IPv6 / Both  
-2. **起始端口**：回车则随机高位连续端口（自动避开 80/443）  
-   - Reality / Hy2 / TUIC / AnyTLS / ShadowTLS  
-   - 若选择 Both：端口按协议顺延分配，例如起始 `10000`：  
-     - IPv4：`10000~10004`  
-     - IPv6：`10005~10009`
-3. **Hy2 端口跳跃范围**：支持分别输入 v4/v6（如 `30100-30200`）  
-4. **证书模式**
-   - 有域名：ACME（支持 **Cloudflare DNS-01**，不占用 80，适配 NPM）
-   - 无域名：自签（SNI 默认 `www.bing.com`），节点自动跳过验证  
-5. **Argo（可选）**：cloudflared token + Argo 域名
+把下面的 `SCRIPT_URL` 替换成你仓库里的 raw 地址（例如 GitHub raw）：
 
----
-
-## 输出与文件位置
-
-安装完成会打印：
-
-- ✅ 节点 URL（含 mihomo YAML）
-
-并写入：
-
-- sing-box 配置：`/etc/sing-box/config.json`
-- 状态文件（sb 动态读取）：`/etc/sing-box/.sb_state`
-- mihomo YAML：`/etc/sing-box/mihomo_proxies.yaml`
-- 动态输出命令：`/usr/local/bin/sb`
-- Hy2 跳跃规则脚本：`/usr/local/bin/sb-hop.sh`
-
-重新输出节点（动态读取 config.json）：
 ```bash
-sb
+SCRIPT_URL="https://raw.githubusercontent.com/<USER>/<REPO>/main/install_warp_fixed_v3.sh"
+curl -fsSL "$SCRIPT_URL" -o install.sh
+chmod +x install.sh
+bash install.sh
 ```
 
 ---
 
-## Hy2 跳跃范围的 URL（最兼容）
+### 2）一行命令安装（curl | bash）
 
-脚本输出的 Hy2 Hop 节点采用最兼容写法：
-
-- `host:PORT` 固定为 **Hy2 主端口**
-- 跳跃范围写在参数里：`mport=30100-30200`
-
-示例：
-```
-hysteria2://PASSWORD@IP:40634/?insecure=0&sni=example.com&mport=30100-30200#SB_Hy2_Hop_v4
-```
-
-> 不推荐 `IP:30100-30200` 这种写法：很多客户端导入器不支持。
-
----
-
-## 端口跳跃范围需要放行哪些端口？
-
-必须同时满足：
-
-1) 云厂商安全组/面板：放行 **Hy2 主端口 UDP**  
-2) 云厂商安全组/面板：放行 **跳跃范围 UDP**（例如 `30100-30200`）  
-3) VPS 内部防火墙：脚本会 best-effort 放行，但云厂商安全组仍需你手动开
-
----
-
-## 验证跳跃规则是否生效
-
-### nftables（推荐）
 ```bash
-nft list chain inet sbhop prerouting
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/<USER>/<REPO>/main/install_warp_fixed_v3.sh)"
 ```
 
-### iptables
+> 你也可以先审计再运行：
 ```bash
-iptables -t nat -vnL PREROUTING --line-numbers
-ip6tables -t nat -vnL PREROUTING --line-numbers
-```
-
-手动下发跳跃规则（无需重装）：
-```bash
-/usr/local/bin/sb-hop.sh
-systemctl restart sing-box 2>/dev/null || rc-service sing-box restart
+curl -fsSL https://raw.githubusercontent.com/<USER>/<REPO>/main/install_warp_fixed_v3.sh | sed -n '1,200p'
 ```
 
 ---
 
-## 管理命令
+## 安装过程会问你什么？
 
-### Debian / Ubuntu（systemd）
+脚本会交互询问（若在 TTY）：
+
+- 是否启用 WARP（默认启用）
+- WARP 模式：
+  - `split`：仅命中的域名走 WARP（推荐）
+  - `all`：所有流量走 WARP
+- 双栈机器输出模式：IPv4 / IPv6 / both
+- 起始端口（回车随机高位连续端口）
+- 证书模式（ACME / 自签）
+- 可选 Argo Token（不需要可直接回车）
+
+---
+
+## 非交互模式（自动化部署）
+
+### 关闭交互
 ```bash
-systemctl status sing-box
-journalctl -u sing-box -f
+WARP_INTERACTIVE=0 bash install.sh
 ```
 
-cloudflared：
+### 直接禁用 WARP
 ```bash
-systemctl status cloudflared
-journalctl -u cloudflared -f
+WARP_INTERACTIVE=0 WARP_ENABLE=0 bash install.sh
 ```
 
-### Alpine（OpenRC）
+### 强制启用 WARP + 分流模式
 ```bash
-rc-service sing-box status
-tail -f /var/log/sing-box.err
+WARP_INTERACTIVE=0 WARP_ENABLE=1 WARP_MODE=split bash install.sh
 ```
 
-cloudflared：
+### 强制启用 WARP + 全局模式
 ```bash
-rc-service cloudflared status
-ps aux | grep -E "cloudflared|tunnel run" | grep -v grep
+WARP_INTERACTIVE=0 WARP_ENABLE=1 WARP_MODE=all bash install.sh
 ```
 
 ---
 
-## FAQ
+## WARP 相关参数（安装时生效）
 
-### 1）Argo 本地 127.0.0.1 通，localhost 不通？
-通常是 `localhost` 解析到了 `::1`（IPv6 loopback），而你监听的是 `127.0.0.1`。  
-用：
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `WARP_INTERACTIVE` | `1` | 是否交互询问（0/1） |
+| `WARP_ENABLE_DEFAULT` | `1` | 未显式设置 `WARP_ENABLE` 时的默认值 |
+| `WARP_ENABLE` | （自动） | 0/1，是否启用 WARP |
+| `WARP_MODE` | `split` | `split` / `all` |
+| `WARP_DOMAINS` | 见脚本 | split 分流域名（逗号分隔） |
+| `WARP_INGRESS` | `engage.cloudflareclient.com` | 优先探测入口（可写域名或 IP） |
+| `WARP_INGRESS_CANDIDATES` | `engage.cloudflareclient.com 162.159.192.1 162.159.193.10` | 备用入口（空格分隔） |
+| `WARP_PORTS` | `2408 500 1701 4500` | 依次探测端口 |
+| `WARP_MTU` | `1280` | WARP 接口 MTU |
+| `WARP_KEEPALIVE` | `25` | WireGuard keepalive 秒 |
+| `WARP_IFNAME` | `sb-warp` | 系统接口名 |
+| `WARP_TEST_URL` | `https://www.cloudflare.com/cdn-cgi/trace` | 探测/自愈测试 URL |
+| `WARP_WATCH_INTERVAL` | `120` | 自愈检测间隔（秒，systemd timer） |
+
+> **提示**：你遇到“WARP 时好时坏”的场景，最有效的组合通常是：`keepalive=25 + 多端口(2408/500/1701/4500) + 多入口候选`。
+
+---
+
+## 端口分配规则（重要）
+
+脚本使用 **连续端口段**：
+
+单栈（ipv4 或 ipv6）默认 5 个端口：
+- base+0：VLESS+REALITY（TCP）
+- base+1：Hysteria2（UDP）
+- base+2：TUIC（UDP）
+- base+3：AnyTLS（TCP）
+- base+4：ShadowTLS（TCP）
+
+双栈（both）为两组连续端口（共 10 个）：
+- IPv4：base+0 ~ base+4
+- IPv6：base+5 ~ base+9
+
+---
+
+## 安装完成后怎么拿节点？
+
+安装结束会自动打印节点链接，并生成：
+
+- `sb`：打印全部节点链接 + 生成 Mihomo YAML  
+  ```bash
+  sb
+  ```
+- Mihomo YAML 输出文件：  
+  - `/etc/sing-box/mihomo_proxies.yaml`
+
+---
+
+## 常用运维命令
+
+### 查看服务状态 / 日志
 ```bash
-curl -sS --max-time 2 http://127.0.0.1:10086
+systemctl status sing-box -l --no-pager
+journalctl -u sing-box -f --no-pager
 ```
 
-### 2）我 80 被 NPM 占用，ACME 证书怎么签？
-选择 **Cloudflare DNS-01**（不占用 80/443）。脚本会提示你输入 `CF_Token`。
+### 配置校验
+```bash
+sing-box check -c /etc/sing-box/config.json
+```
 
-### 3）IPv6-only VPS 能访问 IPv4-only 站点吗？
-不一定。需要上游提供 **NAT64/464XLAT/DNS64**；否则访问纯 IPv4 站点可能失败。
+### 关键文件路径
+- 主配置：`/etc/sing-box/config.json`
+- 状态文件：`/etc/sing-box/.sb_state`
+- WARP profile：`/etc/sing-box/warp/wgcf-profile.conf`
+- 快捷输出：`/usr/local/bin/sb`
+- Mihomo YAML：`/etc/sing-box/mihomo_proxies.yaml`
+
+---
+
+## WARP 排障（分流的网站打不开/超时）
+
+### 1）确认 WARP 接口存在
+```bash
+ip link show sb-warp
+```
+
+### 2）强制走 WARP 接口测试出网
+```bash
+curl -fsSL --interface sb-warp --connect-timeout 4 --max-time 9 https://www.cloudflare.com/cdn-cgi/trace | head
+```
+
+### 3）看 sing-box 是否在和 WARP 端点通信（UDP）
+```bash
+ss -uapn | grep sing-box | egrep '2408|500|1701|4500|162\.159\.19[23]\.'
+```
+
+### 4）查看 WARP 自愈守护是否启用
+**systemd**
+```bash
+systemctl status sb-warp-watch.timer --no-pager
+systemctl list-timers | grep sb-warp-watch
+```
+
+**无 systemd/OpenRC（cron）**
+```bash
+cat /etc/cron.d/sb-warp-watch
+```
+
+### 5）如果你想手动改 WARP 入口/端口
+
+- 修改配置（推荐用 jq 修改 endpoint）：
+```bash
+jq '(.endpoints[] | select(.tag=="warp-ep") | .peers[0].address)="engage.cloudflareclient.com"
+    |(.endpoints[] | select(.tag=="warp-ep") | .peers[0].port)=2408' \
+  /etc/sing-box/config.json > /tmp/c.json && mv /tmp/c.json /etc/sing-box/config.json
+systemctl restart sing-box
+```
+
+- 或者编辑状态文件，影响自愈轮换顺序：
+  - `/etc/sing-box/.sb_state` 里有 `SB_WARP_INGRESS / SB_WARP_PORT / SB_WARP_INGRESS_CANDIDATES / SB_WARP_PORTS`
+
+---
+
+## 卸载
+
+脚本支持一键卸载（会删除 `/etc/sing-box` 等文件）：
+
+```bash
+bash install.sh --uninstall
+```
+
+如果你是 curl|bash 方式运行，可这样传参：
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/<USER>/<REPO>/main/install_warp_fixed_v3.sh)" -- --uninstall
+```
+
+---
+
+## 安全提示
+
+- 建议先下载脚本到本地查看再运行，确认符合你的预期。
+- 脚本会修改防火墙规则、安装系统服务、写入配置文件，请确保在你可控的服务器上使用。
+- WARP 使用 `wgcf` 生成 consumer profile；某些机房/线路对 UDP 端口可能存在间歇性干扰，因此脚本内置了端口/入口轮换自愈。
 
 ---
 
 ## License
-MIT（若仓库另有 License 文件，以仓库声明为准）
+
+按你的项目实际 License 填写（例如 MIT / GPL-3.0 等）。
