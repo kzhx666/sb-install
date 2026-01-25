@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v2.8 (WARP+Gemini fix) (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v2.7.1 (WARP+Gemini fix) (Fix: Firewall Logic & 1:1 Port Mapping)
 # ==============================================================================
 
 set -u
@@ -25,17 +25,87 @@ SHORTCUT_BIN="/usr/local/bin/sb"
 STATE_FILE="/etc/sing-box/.sb_state"
 MIHOMO_FILE="/etc/sing-box/mihomo_proxies.yaml"
 
-# --- Cloudflare WARP (用于解锁/避免部分服务不可用) ---
-# 用法：
-#   默认开启：直接运行脚本即可
+# --- Cloudflare WARP（可选：用于解锁/避免部分服务不可用） ---
+# 你可以在安装时交互选择；也可以用环境变量无交互运行：
 #   关闭：SB_WARP=0 bash install.sh
-#   修改分流域名：SB_WARP_DOMAINS="openai.com,chatgpt.com,netflix.com" bash install.sh
-#   全局走 WARP：SB_WARP_MODE=all bash install.sh
-SB_WARP="${SB_WARP:-1}"                     # 1=开启, 0=关闭
-SB_WARP_MODE="${SB_WARP_MODE:-selective}"   # selective=仅分流指定域名, all=全局走 WARP
-SB_WARP_DOMAINS="${SB_WARP_DOMAINS:-openai.com,chatgpt.com,oaistatic.com,oaiusercontent.com,chat.openai.com,anthropic.com,claude.ai,api.anthropic.com,perplexity.ai,spotify.com,netflix.com,nflxvideo.net,disneyplus.com,disney-plus.net,dssott.com,hbomax.com,max.com,hulu.com,primevideo.com,gemini.google.com,bard.google.com,aistudio.google.com,makersuite.google.com,ai.google.dev,generativelanguage.googleapis.com}"
+#   开启：SB_WARP=1 bash install.sh
+#   分流(默认)：SB_WARP_MODE=selective
+#   全局：SB_WARP_MODE=all
+#   自定义分流域名后缀(逗号分隔)：SB_WARP_DOMAINS="openai.com,gemini.google.com"
+#
+# 说明：
+# - selective：只让你填写的“域名后缀”走 WARP（更稳更推荐）
+# - all：所有流量都走 WARP（可能影响速度/兼容性）
+: "${SB_WARP:=auto}"                     # auto=安装时询问；1=开启；0=关闭
+: "${SB_WARP_MODE:=selective}"           # selective=仅分流指定域名；all=全局走 WARP
+: "${SB_WARP_DOMAINS:=openai.com,chatgpt.com,oaistatic.com,oaiusercontent.com,chat.openai.com,anthropic.com,claude.ai,api.anthropic.com,perplexity.ai,spotify.com,netflix.com,nflxvideo.net,disneyplus.com,disney-plus.net,dssott.com,hbomax.com,max.com,hulu.com,primevideo.com,gemini.google.com,bard.google.com,aistudio.google.com,makersuite.google.com,ai.google.dev,generativelanguage.googleapis.com}"
+
+is_interactive(){ [[ -t 0 && -t 1 ]]; }
+
+prompt_yes_no(){
+  # prompt_yes_no "问题" "Y|N"  -> return 0 表示 yes
+  local q="${1:-}" def="${2:-N}" ans=""
+  local hint="[y/N]"
+  [[ "${def^^}" == "Y" ]] && hint="[Y/n]"
+  read -r -p "${q} ${hint} " ans || ans=""
+  ans="${ans//[[:space:]]/}"
+  if [[ -z "$ans" ]]; then ans="$def"; fi
+  case "${ans,,}" in
+    y|yes) return 0 ;;
+    n|no)  return 1 ;;
+    *) [[ "${def^^}" == "Y" ]] && return 0 || return 1 ;;
+  esac
+}
+
+configure_warp_choice(){
+  # 仅当 SB_WARP=auto 且为交互终端时询问；否则保持用户传入值（或自动默认关闭）
+  if [[ "${SB_WARP:-auto}" == "auto" ]]; then
+    if is_interactive; then
+      if prompt_yes_no "是否启用 Cloudflare WARP 作为额外出口（用于解锁/避免部分服务不可用）？" "N"; then
+        SB_WARP=1
+      else
+        SB_WARP=0
+      fi
+    else
+      SB_WARP=0
+    fi
+  fi
+
+  [[ "${SB_WARP:-0}" == "1" ]] || return 0
+
+  # 模式选择（仅交互时询问；非交互沿用环境变量/默认值）
+  if is_interactive; then
+    local mode_in=""
+    echo -e "${BLUE}[WARP] 模式选择：${PLAIN}"
+    echo "  1) 仅分流(推荐)：只有你填写的域名走 WARP"
+    echo "  2) 全局：所有流量都走 WARP"
+    read -r -p "请选择 1/2（默认 1）： " mode_in || mode_in=""
+    case "${mode_in}" in
+      2) SB_WARP_MODE="all" ;;
+      1|"") SB_WARP_MODE="selective" ;;
+      *) ;; # 保持原值
+    esac
+
+    if [[ "${SB_WARP_MODE:-selective}" != "all" ]]; then
+      echo -e "${BLUE}[WARP] 请输入要走 WARP 的域名后缀（逗号分隔）${PLAIN}"
+      echo "  例：openai.com,chatgpt.com,gemini.google.com,generativelanguage.googleapis.com"
+      echo "  直接回车 = 使用内置默认列表（已包含 OpenAI/Claude/Gemini/常见流媒体等）"
+      local d_in=""
+      read -r -p "域名后缀列表： " d_in || d_in=""
+      if [[ -n "${d_in//[[:space:]]/}" ]]; then
+        SB_WARP_DOMAINS="${d_in}"
+      fi
+    fi
+
+    echo -e "${GREEN}[WARP] 当前配置：SB_WARP=${SB_WARP}  SB_WARP_MODE=${SB_WARP_MODE}${PLAIN}"
+    [[ "${SB_WARP_MODE:-selective}" == "all" ]] || echo -e "${GREEN}[WARP] 分流域名：${SB_WARP_DOMAINS}${PLAIN}"
+  fi
+}
+
+configure_warp_choice
 
 # --- 系统识别 ---
+
 PKG_MGR="unknown"
 command -v apk >/dev/null 2>&1 && PKG_MGR="apk"
 command -v apt-get >/dev/null 2>&1 && PKG_MGR="apt"
@@ -448,7 +518,7 @@ esac
 
 clear
 echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v2.8 (WARP+Gemini fix) (Fix: Firewall Logic & 1:1 Port Mapping)        ${PLAIN}"
+echo -e "${BLUE}   Sing-box 终极定制版 v2.7 (Fix: Firewall Logic Fix)        ${PLAIN}"
 echo -e "${BLUE}==============================================================${PLAIN}"
 
 # ============================================================
