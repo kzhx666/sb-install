@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Sing-box 终极定制版 v5.0 (Fix: Firewall Logic & 1:1 Port Mapping)
+# Sing-box 终极定制版 v6.5 (无损原排版 + 交互主菜单 + 修复 Bug + 极限稳定)
 # ==============================================================================
 
 set -u
@@ -24,71 +24,19 @@ CERT_DIR="/etc/sing-box/cert"
 SHORTCUT_BIN="/usr/local/bin/sb"
 STATE_FILE="/etc/sing-box/.sb_state"
 MIHOMO_FILE="/etc/sing-box/mihomo_proxies.yaml"
-# --- WARP (Cloudflare) 出站：用于分流/解锁 ---
-# 说明：
-#   - 支持“交互选择是否启用”（默认启用）。若不想交互：WARP_INTERACTIVE=0 或直接设置 WARP_ENABLE=0/1
-#   - 默认仅对部分域名分流到 WARP（WARP_MODE=split），也可全局走 WARP（WARP_MODE=all）
-# 默认 WARP 分流域名（split 模式生效，可用 WARP_DOMAINS 覆盖，逗号分隔）
-# 说明：默认 WARP 分流域名已覆盖「网页 + App 后端」：
-# - Gemini App 常见后端：proactivebackend-pa.googleapis.com / generativelanguage.googleapis.com / (可选) googleapis.com
-# - ChatGPT App 常见后端：chatgpt.com / ws.chatgpt.com / api.openai.com / oaistatic.com / oaiusercontent.com
-# - 流媒体常见域名：netflix.com + nflx* / disneyplus.com + bamgrid.com / primevideo.com 等
-# 你可以用环境变量自定义（逗号分隔）：
-#   WARP_DOMAINS="gemini.google.com,proactivebackend-pa.googleapis.com,generativelanguage.googleapis.com" bash install.sh
+
+# --- WARP (Cloudflare) 出站配置 ---
 WARP_DOMAINS_DEFAULT="www.google.com,www.youtube.com,chatgpt.com,ws.chatgpt.com,chat.openai.com,openai.com,api.openai.com,auth.openai.com,platform.openai.com,oaistatic.com,oaiusercontent.com,openaiapi-site.azureedge.net,cdn.oaistatic.com,files.oaiusercontent.com,gemini.google.com,aistudio.google.com,bard.google.com,generativelanguage.googleapis.com,proactivebackend-pa.googleapis.com,googleapis.com,accounts.google.com,oauth2.googleapis.com,claude.ai,anthropic.com,api.anthropic.com,perplexity.ai,api.perplexity.ai,pplx.ai,copilot.microsoft.com,bing.com,edge.microsoft.com,x.ai,grok.x.ai,x.com,netflix.com,nflxvideo.net,nflximg.net,nflximg.com,nflxext.com,nflxso.net,disneyplus.com,dssott.com,bamgrid.com,hulu.com,hulustream.com,huluim.com,primevideo.com,amazonvideo.com,aiv-cdn.net,max.com,hbomax.com,hbo.com,spotify.com,scdn.co,spotifycdn.com,tiktok.com,tiktokcdn.com,tiktokv.com,reddit.com,redd.it,discord.com,discord.gg,discordapp.com,ai.google.com,auth0.openai.com,chatgpt.com chat.openai.com api.openai.com platform.openai.com auth.openai.com openai.com www.openai.com status.openai.com cdn.oaistatic.com cdn.openai.com files.oaiusercontent.com oaiusercontent.com auth0.openai.com claude.ai www.claude.ai api.anthropic.com console.anthropic.com anthropic.com www.anthropic.com status.anthropic.com perplexity.ai www.perplexity.ai api.perplexity.ai gemini.google.com aistudio.google.com makersuite.google.com ai.google.dev generativelanguage.googleapis.com accounts.google.com oauth2.googleapis.com www.googleapis.com www.google.com www.gstatic.com fonts.googleapis.com fonts.gstatic.com openrouter.ai api.openrouter.ai poe.com www.poe.com meta.ai www.meta.ai ai.meta.com copilot.microsoft.com www.bing.com bing.com x.ai www.x.ai grok.com www.grok.com huggingface.co api-inference.huggingface.co cdn-lfs.huggingface.co stability.ai api.stability.ai platform.stability.ai midjourney.com www.midjourney.com runwayml.com www.runwayml.com krea.ai www.krea.ai notion.so www.notion.so api.notion.com notion.com www.notion.com replit.com www.replit.com github.com api.github.com copilot.github.com googleusercontent.com gemini.googleusercontent.com googleapis.com proactivebackend-pa.googleapis.com generativelanguage.googleapis.com"
-
-#   - 使用 sing-box Endpoint/WireGuard（system=true）创建系统接口，再用 direct+bind_interface 走 WARP
-#   - 自带端口探测 + 守护（超时自动切换端口并重启 sing-box），解决你遇到的“时好时坏/超时”
-WARP_INTERACTIVE="${WARP_INTERACTIVE:-1}"       # 1=交互询问（仅当未显式设置 WARP_ENABLE/WARP_MODE 时） 0=不询问
-WARP_ENABLE_DEFAULT="${WARP_ENABLE_DEFAULT:-1}" # 默认启用
-
-# 若用户没有显式设置 WARP_ENABLE，则可交互询问（仅在 TTY）
-if [[ -z "${WARP_ENABLE+x}" ]]; then
-  WARP_ENABLE="$WARP_ENABLE_DEFAULT"
-  if [[ "$WARP_INTERACTIVE" == "1" && -t 0 ]]; then
-    echo
-    echo -e "\033[36m[WARP]\033[0m 是否启用 Cloudflare WARP 分流？"
-    echo "  1) 启用（推荐：解决部分服务不可用/风控）"
-    echo "  0) 禁用（保持原始直连出口）"
-    read -r -p "选择 [1/0] (默认 1): " _ans || true
-    [[ "$_ans" == "0" ]] && WARP_ENABLE=0 || true
-  fi
-else
-  # 已显式设置则规范化
-  case "$WARP_ENABLE" in 0|1) ;; *) WARP_ENABLE="$WARP_ENABLE_DEFAULT";; esac
-fi
-
-# WARP 模式：若用户未显式设置且启用 WARP，可交互选择 split/all
-if [[ -z "${WARP_MODE+x}" ]]; then
-  WARP_MODE="split"
-  if [[ "$WARP_INTERACTIVE" == "1" && -t 0 && "$WARP_ENABLE" == "1" ]]; then
-    echo
-    echo -e "\033[36m[WARP]\033[0m 选择 WARP 使用模式："
-    echo "  1) split：仅命中的域名走 WARP（推荐）"
-    echo "  2) all  ：所有流量都走 WARP（更彻底，但可能影响速度/稳定性）"
-    read -r -p "选择 [1/2] (默认 1): " _m || true
-    [[ "$_m" == "2" ]] && WARP_MODE="all" || true
-  fi
-else
-  WARP_MODE="${WARP_MODE}"
-fi
-
-# 分流域名（逗号分隔）
+WARP_INTERACTIVE="${WARP_INTERACTIVE:-1}"
+WARP_ENABLE_DEFAULT="${WARP_ENABLE_DEFAULT:-1}"
 WARP_DOMAINS="${WARP_DOMAINS:-$WARP_DOMAINS_DEFAULT}"
-# Cloudflare WARP Anycast（建议固定在 162.159.193.0/24）
 WARP_INGRESS="${WARP_INGRESS:-engage.cloudflareclient.com}"
-# 可选入口候选（空格分隔）。默认同时包含 consumer WARP(162.159.192.1) 与 WireGuard 段(162.159.193.10)
 WARP_INGRESS_CANDIDATES="${WARP_INGRESS_CANDIDATES:-engage.cloudflareclient.com 162.159.192.1 162.159.193.10}"
-# 依次探测可用端口（常见：2408/500/1701/4500）
 WARP_PORTS="${WARP_PORTS:-2408 500 1701 4500}"
-# 建议 1280，减少碎片（某些线路更稳）
 WARP_MTU="${WARP_MTU:-1280}"
-# persistent keepalive 秒（NAT 场景更稳）
 WARP_KEEPALIVE="${WARP_KEEPALIVE:-25}"
-# 系统 WireGuard 接口名
 WARP_IFNAME="${WARP_IFNAME:-sb-warp}"
 WARP_TEST_URL="${WARP_TEST_URL:-https://www.cloudflare.com/cdn-cgi/trace}"
-# systemd timer/cron 检测间隔（秒）
 WARP_WATCH_INTERVAL="${WARP_WATCH_INTERVAL:-120}"
 
 
@@ -165,8 +113,8 @@ user_exists(){ id "$1" >/dev/null 2>&1; }
 
 create_user_group(){
   local u="$1" g="$2"
-  local NOLOGIN="/sbin/nologin"
-  [[ -x "$NOLOGIN" ]] || NOLOGIN="/bin/false"
+  local nologin_path="/sbin/nologin"
+  [[ -x "$nologin_path" ]] || nologin_path="/bin/false"
 
   if ! group_exists "$g"; then
     if command -v addgroup >/dev/null 2>&1; then addgroup -S "$g" >/dev/null 2>&1 || true
@@ -174,8 +122,8 @@ create_user_group(){
     fi
   fi
   if ! user_exists "$u"; then
-    if command -v adduser >/dev/null 2>&1; then adduser -S -G "$g" -s "$NOLOGIN" "$u" >/dev/null 2>&1 || true
-    elif command -v useradd >/dev/null 2>&1; then useradd -r -g "$g" -s "$NOLOGIN" "$u" >/dev/null 2>&1 || true
+    if command -v adduser >/dev/null 2>&1; then adduser -S -G "$g" -s "$nologin_path" "$u" >/dev/null 2>&1 || true
+    elif command -v useradd >/dev/null 2>&1; then useradd -r -g "$g" -s "$nologin_path" "$u" >/dev/null 2>&1 || true
     fi
   fi
 }
@@ -217,6 +165,7 @@ default_iface() {
   [[ -z "$iface" ]] && iface="eth0"
   echo "$iface"
 }
+
 # --- WARP 工具 ---
 _arch_norm(){
   local a
@@ -518,35 +467,35 @@ fw_allow_ports(){
       iptables -C INPUT -p udp --dport "${rs}:${re}" -j ACCEPT >/dev/null 2>&1 || iptables -A INPUT -p udp --dport "${rs}:${re}" -j ACCEPT >/dev/null 2>&1 || true
     fi
 
-# 同步放行 IPv6（ip6tables），否则 IPv6 入站可能不通
-if command -v ip6tables >/dev/null 2>&1; then
-  for p in $tcp_ports; do
-    ip6tables -C INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
-  done
-  for p in $udp_ports; do
-    ip6tables -C INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
-  done
-  if [[ -n "$udp_range" ]]; then
-    local rs6="${udp_range%-*}" re6="${udp_range#*-}"
-    ip6tables -C INPUT -p udp --dport "${rs6}:${re6}" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p udp --dport "${rs6}:${re6}" -j ACCEPT >/dev/null 2>&1 || true
-  fi
-fi
+    # 同步放行 IPv6（ip6tables），否则 IPv6 入站可能不通
+    if command -v ip6tables >/dev/null 2>&1; then
+      for p in $tcp_ports; do
+        ip6tables -C INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p tcp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
+      done
+      for p in $udp_ports; do
+        ip6tables -C INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p udp --dport "$p" -j ACCEPT >/dev/null 2>&1 || true
+      done
+      if [[ -n "$udp_range" ]]; then
+        local rs6="${udp_range%-*}" re6="${udp_range#*-}"
+        ip6tables -C INPUT -p udp --dport "${rs6}:${re6}" -j ACCEPT >/dev/null 2>&1 || ip6tables -A INPUT -p udp --dport "${rs6}:${re6}" -j ACCEPT >/dev/null 2>&1 || true
+      fi
+    fi
     ok "已通过 iptables 放行端口"
   else
     # [Fix] 如果真的没有 iptables，尝试直接操作 nft
     if command -v nft >/dev/null 2>&1; then
 
-# 尽量按端口逐条添加，兼容不同 nft 语法/链名环境
-for p in $tcp_ports; do
-  nft add rule inet filter input tcp dport "$p" accept >/dev/null 2>&1 || true
-done
-for p in $udp_ports; do
-  nft add rule inet filter input udp dport "$p" accept >/dev/null 2>&1 || true
-done
-if [[ -n "$udp_range" ]]; then
-  local rs="${udp_range%-*}" re="${udp_range#*-}"
-  nft add rule inet filter input udp dport "$rs"-"$re" accept >/dev/null 2>&1 || true
-fi
+      # 尽量按端口逐条添加，兼容不同 nft 语法/链名环境
+      for p in $tcp_ports; do
+        nft add rule inet filter input tcp dport "$p" accept >/dev/null 2>&1 || true
+      done
+      for p in $udp_ports; do
+        nft add rule inet filter input udp dport "$p" accept >/dev/null 2>&1 || true
+      done
+      if [[ -n "$udp_range" ]]; then
+        local rs="${udp_range%-*}" re="${udp_range#*-}"
+        nft add rule inet filter input udp dport "$rs"-"$re" accept >/dev/null 2>&1 || true
+      fi
        warn "未找到 iptables，已尝试直接添加 nft 规则"
     fi
   fi
@@ -557,26 +506,75 @@ fi
 do_uninstall(){
   service_disable
   rm -f /etc/systemd/system/sing-box.service >/dev/null 2>&1 || true
-  rm -f /etc/init.d/sing-box >/dev/null 2>&1 || true
-  rm -f /usr/local/bin/sb-hop.sh /usr/local/bin/sb-fw.sh /usr/local/bin/sb-selfcheck.sh >/dev/null 2>&1 || true
-  rm -f "$SHORTCUT_BIN" >/dev/null 2>&1 || true
-  rm -f "$INSTALL_PATH" >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/cloudflared.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/sb-warp-*.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/sb-warp-*.timer >/dev/null 2>&1 || true
+  rm -f /etc/init.d/sing-box /etc/init.d/cloudflared >/dev/null 2>&1 || true
+  rm -f /usr/local/bin/sb-hop.sh /usr/local/bin/sb-warp-watch.sh /usr/local/bin/sb-selfcheck.sh >/dev/null 2>&1 || true
+  rm -f "$SHORTCUT_BIN" "$INSTALL_PATH" >/dev/null 2>&1 || true
   rm -rf "$CONF_DIR" >/dev/null 2>&1 || true
   rm -f /etc/sysctl.d/99-singbox-tune.conf >/dev/null 2>&1 || true
   sysctl -p >/dev/null 2>&1 || true
-  ok "已卸载 sing-box 相关文件与服务"
-  exit 0
+  ok "已彻底卸载 Sing-box 及所有附属服务。"
 }
 
-# --- 参数 ---
-case "${1:-}" in
-  --uninstall) do_uninstall ;;
-esac
+# --- 核心更新 ---
+update_core(){
+  echo -e "${YELLOW}正在获取 Sing-box 最新稳定版信息...${PLAIN}"
+  local SB_TAG
+  SB_TAG="$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name || true)"
+  [[ -z "${SB_TAG:-}" || "$SB_TAG" == "null" ]] && SB_TAG="v1.12.0"
+  local ARCH SB_ARCH TMP_DIR
+  ARCH="$(uname -m)"
+  case "$ARCH" in
+    x86_64|amd64) SB_ARCH="amd64" ;;
+    aarch64|arm64) SB_ARCH="arm64" ;;
+    *) SB_ARCH="amd64" ;;
+  esac
+  TMP_DIR="$(mktemp -d)"
+  info "正在下载 $SB_TAG ($SB_ARCH)..."
+  wget -q -O "$TMP_DIR/sb.tar.gz" "https://github.com/SagerNet/sing-box/releases/download/${SB_TAG}/sing-box-${SB_TAG#v}-linux-${SB_ARCH}.tar.gz" || { err "下载失败"; rm -rf "$TMP_DIR"; return 1; }
+  tar -xzf "$TMP_DIR/sb.tar.gz" -C "$TMP_DIR"
+  service_stop
+  mv "$TMP_DIR"/sing-box-*/sing-box "$INSTALL_PATH"
+  rm -rf "$TMP_DIR"
+  chmod +x "$INSTALL_PATH"
+  command -v setcap >/dev/null 2>&1 && setcap 'cap_net_bind_service=+ep' "$INSTALL_PATH" >/dev/null 2>&1 || true
+  service_enable_restart
+  ok "Sing-box 核心已成功更新至 $SB_TAG 并已重启服务！"
+}
 
-clear
-echo -e "${BLUE}==============================================================${PLAIN}"
-echo -e "${BLUE}   Sing-box 终极定制版 v5.0        ${PLAIN}"
-echo -e "${BLUE}==============================================================${PLAIN}"
+# ============================================================
+# [主菜单系统]
+# ============================================================
+if [[ -z "${1:-}" ]]; then
+  clear
+  echo -e "${BLUE}==============================================================${PLAIN}"
+  echo -e "${BLUE}   Sing-box 终极定制版 v6.5 (无损原排版 + 修复 Bug + 交互菜单)   ${PLAIN}"
+  echo -e "${BLUE}==============================================================${PLAIN}"
+  echo -e "  ${GREEN}1.${PLAIN} 全新安装 / 重新配置 (含WARP,跳跃,Argo等)"
+  echo -e "  ${GREEN}2.${PLAIN} 查看所有节点链接与配置 (sb 命令)"
+  echo -e "  ${GREEN}3.${PLAIN} 一键更新 Sing-box 核心至最新版"
+  echo -e "  ${GREEN}4.${PLAIN} 彻底卸载脚本及所有服务"
+  echo -e "  ${GREEN}0.${PLAIN} 退出"
+  echo -e "${BLUE}==============================================================${PLAIN}"
+  read -r -p "请输入选择 [0-4] (默认 1): " MENU_SEL
+  MENU_SEL="${MENU_SEL:-1}"
+  
+  case "$MENU_SEL" in
+    2) 
+      if [[ -x "$SHORTCUT_BIN" ]]; then "$SHORTCUT_BIN"; else warn "未检测到配置，请先安装！"; fi
+      exit 0 
+      ;;
+    3) update_core; exit 0 ;;
+    4) do_uninstall; exit 0 ;;
+    0) echo "已退出。"; exit 0 ;;
+    1) echo -e "\n${GREEN}开始全新安装流程...${PLAIN}\n" ;;
+    *) err "无效选择"; exit 1 ;;
+  esac
+elif [[ "${1:-}" == "--uninstall" ]]; then
+  do_uninstall; exit 0
+fi
 
 # ============================================================
 # [1] 环境初始化
@@ -589,6 +587,7 @@ create_user_group "$SB_USER" "$SB_GROUP"
 mkdir -p "$CONF_DIR" "$CERT_DIR"
 chown -R root:"$SB_GROUP" "$CONF_DIR" >/dev/null 2>&1 || true
 chmod 750 "$CONF_DIR" "$CERT_DIR" >/dev/null 2>&1 || true
+
 # ============================================================
 # [2] 配置收集
 # ============================================================
@@ -650,6 +649,32 @@ else HOST_PLAIN="${IPV4:-$IPV6}"
 fi
 ok "输出模式：${OUT_MODE}"
 
+# --- [恢复] 完整的 WARP 交互式询问 ---
+echo -e "------------------------------------------------"
+if [[ -z "${WARP_ENABLE+x}" ]]; then
+  WARP_ENABLE="$WARP_ENABLE_DEFAULT"
+  if [[ "$WARP_INTERACTIVE" == "1" ]]; then
+    echo -e "${BLUE}[WARP]${PLAIN} 是否启用 Cloudflare WARP 分流？"
+    echo "  1) 启用（推荐：解决部分服务不可用/风控）"
+    echo "  0) 禁用（保持原始直连出口）"
+    read -r -p "选择 [1/0] (默认 1): " _ans || true
+    [[ "$_ans" == "0" ]] && WARP_ENABLE=0 || true
+  fi
+else
+  case "$WARP_ENABLE" in 0|1) ;; *) WARP_ENABLE="$WARP_ENABLE_DEFAULT";; esac
+fi
+
+if [[ -z "${WARP_MODE+x}" ]]; then
+  WARP_MODE="split"
+  if [[ "$WARP_INTERACTIVE" == "1" && "$WARP_ENABLE" == "1" ]]; then
+    echo -e "${BLUE}[WARP]${PLAIN} 选择 WARP 使用模式："
+    echo "  1) split：仅命中的域名走 WARP（推荐）"
+    echo "  2) all  ：所有流量都走 WARP（更彻底，但可能影响速度/稳定性）"
+    read -r -p "选择 [1/2] (默认 1): " _m || true
+    [[ "$_m" == "2" ]] && WARP_MODE="all" || true
+  fi
+fi
+
 # ------------------------------------------------------------------------------
 # 出口栈偏好（解决：选 IPv6 节点但出口仍走 IPv4 的情况）
 # - OUT_MODE=ipv4：优先 IPv4 出口
@@ -690,7 +715,7 @@ fi
 echo -e "------------------------------------------------"
 read -r -p "请输入起始端口(回车随机高位): " BASE_PORT || true
 
-NEED_SINGLE=5
+NEED_SINGLE=6 # Reality, Hy2, Tuic, AnyTLS, ShadowTLS, Trojan
 NEED_PORTS=$NEED_SINGLE
 [[ "$OUT_MODE" == "both" ]] && NEED_PORTS=$((NEED_SINGLE*2))
 if [[ -z "${BASE_PORT:-}" ]]; then
@@ -730,12 +755,14 @@ P_HY2_4=$((BASE_PORT_V4 + 1))
 P_TUIC4=$((BASE_PORT_V4 + 2))
 P_ANYTLS4=$((BASE_PORT_V4 + 3))
 P_SHADOWTLS4=$((BASE_PORT_V4 + 4))
+P_TROJAN4=$((BASE_PORT_V4 + 5))
 
 P_REALITY=$P_REALITY4
 P_HY2=$P_HY2_4
 P_TUIC=$P_TUIC4
 P_ANYTLS=$P_ANYTLS4
 P_SHADOWTLS=$P_SHADOWTLS4
+P_TROJAN=$P_TROJAN4
 
 if [[ "$OUT_MODE" == "both" ]]; then
   P_REALITY6=$BASE_PORT_V6
@@ -743,6 +770,7 @@ if [[ "$OUT_MODE" == "both" ]]; then
   P_TUIC6=$((BASE_PORT_V6 + 2))
   P_ANYTLS6=$((BASE_PORT_V6 + 3))
   P_SHADOWTLS6=$((BASE_PORT_V6 + 4))
+  P_TROJAN6=$((BASE_PORT_V6 + 5))
 fi
 
 LISTEN_V4="0.0.0.0"; LISTEN_V6="::"
@@ -753,10 +781,10 @@ echo -e ">>> 端口分配完成"
 echo -e "------------------------------------------------"
 echo -e ">>> 当前分配端口详情:"
 if [[ "$OUT_MODE" == "both" ]]; then
-  echo -e "${BLUE}[IPv4]${PLAIN} Reality:${GREEN}${P_REALITY4}${PLAIN} Hy2:${GREEN}${P_HY2_4}${PLAIN} TUIC:${GREEN}${P_TUIC4}${PLAIN} AnyTLS:${GREEN}${P_ANYTLS4}${PLAIN} ST:${GREEN}${P_SHADOWTLS4}${PLAIN}"
-  echo -e "${BLUE}[IPv6]${PLAIN} Reality:${GREEN}${P_REALITY6}${PLAIN} Hy2:${GREEN}${P_HY2_6}${PLAIN} TUIC:${GREEN}${P_TUIC6}${PLAIN} AnyTLS:${GREEN}${P_ANYTLS6}${PLAIN} ST:${GREEN}${P_SHADOWTLS6}${PLAIN}"
+  echo -e "${BLUE}[IPv4]${PLAIN} Reality:${GREEN}${P_REALITY4}${PLAIN} Hy2:${GREEN}${P_HY2_4}${PLAIN} Tuic:${GREEN}${P_TUIC4}${PLAIN} Trojan:${GREEN}${P_TROJAN4}${PLAIN} AnyTLS:${GREEN}${P_ANYTLS4}${PLAIN} ST:${GREEN}${P_SHADOWTLS4}${PLAIN}"
+  echo -e "${BLUE}[IPv6]${PLAIN} Reality:${GREEN}${P_REALITY6}${PLAIN} Hy2:${GREEN}${P_HY2_6}${PLAIN} Tuic:${GREEN}${P_TUIC6}${PLAIN} Trojan:${GREEN}${P_TROJAN6}${PLAIN} AnyTLS:${GREEN}${P_ANYTLS6}${PLAIN} ST:${GREEN}${P_SHADOWTLS6}${PLAIN}"
 else
-  echo -e "Reality:${GREEN}${P_REALITY}${PLAIN} / Hy2:${GREEN}${P_HY2}${PLAIN} / TUIC:${GREEN}${P_TUIC}${PLAIN} / AnyTLS:${GREEN}${P_ANYTLS}${PLAIN} / ShadowTLS:${GREEN}${P_SHADOWTLS}${PLAIN}"
+  echo -e "Reality:${GREEN}${P_REALITY}${PLAIN} / Hy2:${GREEN}${P_HY2}${PLAIN} / Tuic:${GREEN}${P_TUIC}${PLAIN} / Trojan:${GREEN}${P_TROJAN}${PLAIN} / AnyTLS:${GREEN}${P_ANYTLS}${PLAIN} / ShadowTLS:${GREEN}${P_SHADOWTLS}${PLAIN}"
 fi
 echo -e "------------------------------------------------"
 
@@ -792,6 +820,11 @@ if [[ -n "${HOP_PORTS_LINK_V4:-}" ]]; then
   HOP_PORTS_IPT="${HOP_PORTS_LINK_V4//-/:}"
 fi
 
+# --- 自定义节点命名前缀 ---
+echo -e "------------------------------------------------"
+read -r -p "请输入节点名称前缀 (比如输入 'HK' 生成为 HK_Reality，回车默认 SB): " NODE_PREFIX || true
+[[ -z "${NODE_PREFIX:-}" ]] && NODE_PREFIX="SB"
+
 echo -e "------------------------------------------------"
 echo -e "请选择证书模式:"
 echo -e "  1. 有域名(ACME)"
@@ -817,7 +850,7 @@ if [[ "$CERT_MODE" == "1" ]]; then
 fi
 if [[ "$CERT_MODE" == "2" ]]; then SNI_HOST="www.bing.com"; CERT_INSECURE="1"; fi
 
-read -r -p "Cloudflare Argo Token (不需要回车): " ARGO_TOKEN || true
+read -r -p "Cloudflare Argo Token (不需要回车跳过): " ARGO_TOKEN || true
 ARGO_DOMAIN=""
 ARGO_PORT=10086
 if [[ -n "${ARGO_TOKEN:-}" ]]; then
@@ -874,27 +907,31 @@ fi
 chmod 644 "$CERT_PATH" "$KEY_PATH" >/dev/null 2>&1 || true
 
 # ============================================================
-# [4] 安装 sing-box
+# [4] 安装/检测 sing-box 核心
 # ============================================================
-echo -e "${YELLOW}[4/12] 安装 sing-box...${PLAIN}"
-SB_TAG="$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name || true)"
-[[ -z "${SB_TAG:-}" || "$SB_TAG" == "null" ]] && SB_TAG="v1.12.0"
-ARCH="$(uname -m)"
-case "$ARCH" in
-  x86_64|amd64) SB_ARCH="amd64" ;;
-  aarch64|arm64) SB_ARCH="arm64" ;;
-  *) SB_ARCH="amd64" ;;
-esac
+echo -e "${YELLOW}[4/12] 安装/检测 sing-box 核心...${PLAIN}"
+if [[ ! -f "$INSTALL_PATH" ]]; then
+  SB_TAG="$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name || true)"
+  [[ -z "${SB_TAG:-}" || "$SB_TAG" == "null" ]] && SB_TAG="v1.12.0"
+  ARCH="$(uname -m)"
+  case "$ARCH" in
+    x86_64|amd64) SB_ARCH="amd64" ;;
+    aarch64|arm64) SB_ARCH="arm64" ;;
+    *) SB_ARCH="amd64" ;;
+  esac
 
-TMP_DIR="$(mktemp -d 2>/dev/null || echo /tmp/sb.$$)"
-mkdir -p "$TMP_DIR"
-wget -q -O "$TMP_DIR/sb.tar.gz" "https://github.com/SagerNet/sing-box/releases/download/${SB_TAG}/sing-box-${SB_TAG#v}-linux-${SB_ARCH}.tar.gz" || { err "下载失败"; exit 1; }
-tar -xzf "$TMP_DIR/sb.tar.gz" -C "$TMP_DIR"
-mv "$TMP_DIR"/sing-box-*/sing-box "$INSTALL_PATH"
-rm -rf "$TMP_DIR"
-chmod +x "$INSTALL_PATH"
-command -v setcap >/dev/null 2>&1 && setcap 'cap_net_bind_service=+ep' "$INSTALL_PATH" >/dev/null 2>&1 || true
-ok "sing-box 已安装: $SB_TAG"
+  TMP_DIR="$(mktemp -d 2>/dev/null || echo /tmp/sb.$$)"
+  mkdir -p "$TMP_DIR"
+  wget -q -O "$TMP_DIR/sb.tar.gz" "https://github.com/SagerNet/sing-box/releases/download/${SB_TAG}/sing-box-${SB_TAG#v}-linux-${SB_ARCH}.tar.gz" || { err "下载失败"; exit 1; }
+  tar -xzf "$TMP_DIR/sb.tar.gz" -C "$TMP_DIR"
+  mv "$TMP_DIR"/sing-box-*/sing-box "$INSTALL_PATH"
+  rm -rf "$TMP_DIR"
+  chmod +x "$INSTALL_PATH"
+  command -v setcap >/dev/null 2>&1 && setcap 'cap_net_bind_service=+ep' "$INSTALL_PATH" >/dev/null 2>&1 || true
+  ok "sing-box 已安装: $SB_TAG"
+else
+  ok "sing-box 核心已存在，跳过安装"
+fi
 
 # ============================================================
 # [5] 生成 config.json
@@ -976,11 +1013,11 @@ EOX
     ROUTE_FINAL_BOTH="warp"
     ROUTE_FINAL_SINGLE="warp"
     WARP_ROUTE_RULES_BOTH=$(cat <<'EOX'
-      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4","vless-reality-v6","hy2-in-v6","tuic-in-v6","anytls-in-v6","shadowtls-in-v6","vless-argo-in"], "outbound": "warp" },
+      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4","trojan-in-v4","vless-reality-v6","hy2-in-v6","tuic-in-v6","anytls-in-v6","shadowtls-in-v6","trojan-in-v6","vless-argo-in"], "outbound": "warp" },
 EOX
 )
     WARP_ROUTE_RULES_SINGLE=$(cat <<'EOX'
-      { "inbound": ["vless-reality","hy2-in","tuic-in","anytls-in","shadowtls-in","vless-argo-in"], "outbound": "warp" },
+      { "inbound": ["vless-reality","hy2-in","tuic-in","anytls-in","shadowtls-in","trojan-in","vless-argo-in"], "outbound": "warp" },
 EOX
 )
   else
@@ -1008,9 +1045,11 @@ fi
 
 UUID=""; TUIC_UUID=""
 R_PRI=""; R_PUB=""; SHORT_ID=""
-HY2_PASS=""; TUIC_PASS=""; ANYTLS_PASS=""; ST_PASS=""
+HY2_PASS=""; TUIC_PASS=""; ANYTLS_PASS=""; ST_PASS=""; TROJAN_PASS=""
 ST_SS_METHOD=""; ST_SS_KEY=""
 ST_LOCAL_PORT=18080
+ST_LOCAL4=18080
+ST_LOCAL6=18081
 ST_HANDSHAKE_HOST="www.cloudflare.com"
 ST_HANDSHAKE_PORT=443
 ST_VERSION=3
@@ -1026,9 +1065,10 @@ if [[ -s "$OLD_CONF" ]] && jq -e . "$OLD_CONF" >/dev/null 2>&1; then
   TUIC_PASS="$(jq -r '.inbounds[]? | select(.type=="tuic") | .users[0].password' "$OLD_CONF" | head -n1)"
   ANYTLS_PASS="$(jq -r '.inbounds[]? | select(.type=="anytls") | .users[0].password' "$OLD_CONF" | head -n1)"
   ST_PASS="$(jq -r '.inbounds[]? | select(.type=="shadowtls") | .users[0].password' "$OLD_CONF" | head -n1)"
+  TROJAN_PASS="$(jq -r '.inbounds[]? | select(.type=="trojan") | .users[0].password' "$OLD_CONF" | head -n1)"
 
-  ST_SS_METHOD="$(jq -r '.inbounds[]? | select(.type=="shadowsocks" and .tag=="st-ss-local") | .method' "$OLD_CONF" | head -n1)"
-  ST_SS_KEY="$(jq -r '.inbounds[]? | select(.type=="shadowsocks" and .tag=="st-ss-local") | .password' "$OLD_CONF" | head -n1)"
+  ST_SS_METHOD="$(jq -r '.inbounds[]? | select(.type=="shadowsocks" and (.tag|test("^st-ss-local"))) | .method' "$OLD_CONF" | head -n1)"
+  ST_SS_KEY="$(jq -r '.inbounds[]? | select(.type=="shadowsocks" and (.tag|test("^st-ss-local"))) | .password' "$OLD_CONF" | head -n1)"
 
   ST_HANDSHAKE_HOST="$(jq -r '.inbounds[]? | select(.type=="shadowtls") | .handshake.server' "$OLD_CONF" | head -n1)"
   ST_HANDSHAKE_PORT="$(jq -r '.inbounds[]? | select(.type=="shadowtls") | .handshake.server_port' "$OLD_CONF" | head -n1)"
@@ -1051,6 +1091,7 @@ fi
 [[ -z "${TUIC_PASS:-}" || "${TUIC_PASS}" == "null" ]] && TUIC_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
 [[ -z "${ANYTLS_PASS:-}" || "${ANYTLS_PASS}" == "null" ]] && ANYTLS_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
 [[ -z "${ST_PASS:-}" || "${ST_PASS}" == "null" ]] && ST_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
+[[ -z "${TROJAN_PASS:-}" || "${TROJAN_PASS}" == "null" ]] && TROJAN_PASS="$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
 [[ -z "${ST_SS_METHOD:-}" || "${ST_SS_METHOD}" == "null" ]] && ST_SS_METHOD="2022-blake3-aes-256-gcm"
 [[ -z "${ST_SS_KEY:-}" || "${ST_SS_KEY}" == "null" ]] && ST_SS_KEY="$(openssl rand 32 | base64 | tr -d '\n')"
 
@@ -1086,7 +1127,8 @@ append_hop_range() {
       \"listen\": \"${listen}\",
       \"listen_port\": ${p},
       \"users\": [{ \"password\": \"${HY2_PASS}\" }],
-      \"ignore_client_bandwidth\": true,
+      \"up_mbps\": 10000,
+      \"down_mbps\": 10000,
       \"tls\": { \"enabled\": true, \"alpn\": [\"h3\"], \"certificate_path\": \"${CERT_PATH}\", \"key_path\": \"${KEY_PATH}\" }
     }"
   done
@@ -1126,10 +1168,9 @@ cat > "$CONF_DIR/config.json" <<EOF
 ${WARP_ENDPOINTS_BLOCK}  "route": {
     "auto_detect_interface": true,
     "rules": [
-${WARP_ROUTE_RULES_BOTH}      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4"], "ip_version": 6, "outbound": "block" },
-      { "inbound": ["vless-reality-v6","hy2-in-v6","tuic-in-v6","anytls-in-v6","shadowtls-in-v6"], "outbound": "direct-v6" },
-      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4"], "outbound": "direct-v4" },
-      { "inbound": ["vless-argo-in"], "outbound": "direct-v4" }
+${WARP_ROUTE_RULES_BOTH}      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4","trojan-in-v4"], "ip_version": 6, "outbound": "block" },
+      { "inbound": ["vless-reality-v6","hy2-in-v6","tuic-in-v6","anytls-in-v6","shadowtls-in-v6","trojan-in-v6"], "outbound": "direct-v6" },
+      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic-in-v4","anytls-in-v4","shadowtls-in-v4","trojan-in-v4","vless-argo-in"], "outbound": "direct-v4" }
     ],
     "final": "${ROUTE_FINAL_BOTH}"
   },
@@ -1172,18 +1213,20 @@ ${WARP_ROUTE_RULES_BOTH}      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic
       "type": "hysteria2",
       "tag": "hy2-in-v4",
       "listen": "${LISTEN_V4}",
-      "listen_port": ${P_HY24},
+      "listen_port": ${P_HY2_4},
       "users": [{ "password": "${HY2_PASS}" }],
-      "ignore_client_bandwidth": true,
+      "up_mbps": 10000,
+      "down_mbps": 10000,
       "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
       "type": "hysteria2",
       "tag": "hy2-in-v6",
       "listen": "${LISTEN_V6}",
-      "listen_port": ${P_HY26},
+      "listen_port": ${P_HY2_6},
       "users": [{ "password": "${HY2_PASS}" }],
-      "ignore_client_bandwidth": true,
+      "up_mbps": 10000,
+      "down_mbps": 10000,
       "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
@@ -1257,7 +1300,23 @@ ${WARP_ROUTE_RULES_BOTH}      { "inbound": ["vless-reality-v4","hy2-in-v4","tuic
       "users": [{ "password": "${ST_PASS}" }],
       "handshake": { "server": "${ST_HANDSHAKE_HOST}", "server_port": ${ST_HANDSHAKE_PORT} },
       "detour": "st-ss-local-v6"
-    }${ARGO_INB}
+    },
+    {
+      "type": "trojan",
+      "tag": "trojan-in-v4",
+      "listen": "${LISTEN_V4}",
+      "listen_port": ${P_TROJAN4},
+      "users": [{ "password": "${TROJAN_PASS}" }],
+      "tls": { "enabled": true, "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
+    },
+    {
+      "type": "trojan",
+      "tag": "trojan-in-v6",
+      "listen": "${LISTEN_V6}",
+      "listen_port": ${P_TROJAN6},
+      "users": [{ "password": "${TROJAN_PASS}" }],
+      "tls": { "enabled": true, "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
+    }${ARGO_INB}${HOP_EXTRA_INBOUNDS}
   ],
   "outbounds": [
 ${WARP_OUTBOUNDS_BLOCK}    {
@@ -1312,7 +1371,8 @@ ${WARP_ROUTE_RULES_SINGLE}      ${SINGLE_BLOCK_RULE}
       "listen": "${LISTEN_SINGLE}",
       "listen_port": ${P_HY2},
       "users": [{ "password": "${HY2_PASS}" }],
-      "ignore_client_bandwidth": true,
+      "up_mbps": 10000,
+      "down_mbps": 10000,
       "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
     },
     {
@@ -1350,7 +1410,15 @@ ${WARP_ROUTE_RULES_SINGLE}      ${SINGLE_BLOCK_RULE}
       "users": [{ "password": "${ST_PASS}" }],
       "handshake": { "server": "${ST_HANDSHAKE_HOST}", "server_port": ${ST_HANDSHAKE_PORT} },
       "detour": "st-ss-local"
-    }${ARGO_INB}
+    },
+    {
+      "type": "trojan",
+      "tag": "trojan-in",
+      "listen": "${LISTEN_SINGLE}",
+      "listen_port": ${P_TROJAN},
+      "users": [{ "password": "${TROJAN_PASS}" }],
+      "tls": { "enabled": true, "certificate_path": "${CERT_PATH}", "key_path": "${KEY_PATH}" }
+    }${ARGO_INB}${HOP_EXTRA_INBOUNDS}
   ],
   "outbounds": [
 ${WARP_OUTBOUNDS_BLOCK}    {
@@ -1656,17 +1724,18 @@ fi
 
 # ============================================================
 # [8] 防火墙
-
 # ============================================================
 echo -e "${YELLOW}[8/12] 防火墙放行...${PLAIN}"
-TCP_ALLOW="${P_REALITY} ${P_ANYTLS} ${P_SHADOWTLS}"
+TCP_ALLOW="${P_REALITY} ${P_ANYTLS} ${P_SHADOWTLS} ${P_TROJAN}"
 UDP_ALLOW="${P_HY2} ${P_TUIC}"
 UDP_RANGE_ALLOW=""
 [[ -n "${HOP_PORTS_LINK_V4:-}" ]] && UDP_RANGE_ALLOW="${HOP_PORTS_LINK_V4}"
 if [[ "$OUT_MODE" == "both" ]]; then
-  TCP_ALLOW="$TCP_ALLOW ${P_REALITY6} ${P_ANYTLS6} ${P_SHADOWTLS6}"
+  TCP_ALLOW="$TCP_ALLOW ${P_REALITY6} ${P_ANYTLS6} ${P_SHADOWTLS6} ${P_TROJAN6}"
   UDP_ALLOW="$UDP_ALLOW ${P_HY2_6} ${P_TUIC6}"
 fi
+
+# 调用外层的 fw_allow_ports 函数进行放行
 fw_allow_ports "$TCP_ALLOW" "$UDP_ALLOW" "$UDP_RANGE_ALLOW"
 if [[ "$OUT_MODE" == "both" && -n "${HOP_PORTS_LINK_V6:-}" ]]; then
   fw_allow_ports "" "" "${HOP_PORTS_LINK_V6}"
@@ -1706,7 +1775,7 @@ SB_WARP_INGRESS_CANDIDATES="${WARP_INGRESS_CANDIDATES}"
 SB_WARP_PORTS="${WARP_PORTS}"
 SB_WARP_PORT="${WARP_PORT_SELECTED:-}"
 SB_WARP_IFNAME="${WARP_IFNAME}"
-
+SB_NODE_PREFIX="${NODE_PREFIX}"
 EOF
 chmod 600 "$STATE_FILE"
 
@@ -1914,6 +1983,7 @@ SB_HOP_REDIRECT_ENABLED="${SB_HOP_REDIRECT_ENABLED:-0}"
 SB_HOP_ENGINE="${SB_HOP_ENGINE:-none}"
 SB_CERT_INSECURE="${SB_CERT_INSECURE:-1}"
 SB_REALITY_PBK="${SB_REALITY_PBK:-}"
+PREFIX="${SB_NODE_PREFIX:-SB}"
 
 urlsafe_base64() {
   if command -v base64 >/dev/null 2>&1; then
@@ -1980,8 +2050,15 @@ ST_PORT6="$(jq -r '.inbounds[] | select(.tag=="shadowtls-in-v6") | .listen_port'
 [[ -z "$ST_PORT4" ]] && ST_PORT4="$ST_PORT_SINGLE"
 [[ -z "$ST_PORT6" ]] && ST_PORT6="$ST_PORT_SINGLE"
 
-SS_M=$(jq -r '.inbounds[] | select(.tag=="st-ss-local") | .method' "$CONF")
-SS_P=$(jq -r '.inbounds[] | select(.tag=="st-ss-local") | .password' "$CONF")
+TROJAN_PWD="$(jq -r '.inbounds[] | select(.tag|test("^trojan-in")) | .users[0].password' "$CONF" | head -n1)"
+PORT_TR_SINGLE="$(jq -r '.inbounds[] | select(.tag=="trojan-in") | .listen_port' "$CONF" | head -n1)"
+PORT_TR4="$(jq -r '.inbounds[] | select(.tag=="trojan-in-v4") | .listen_port' "$CONF" | head -n1)"
+PORT_TR6="$(jq -r '.inbounds[] | select(.tag=="trojan-in-v6") | .listen_port' "$CONF" | head -n1)"
+[[ -z "$PORT_TR4" ]] && PORT_TR4="$PORT_TR_SINGLE"
+[[ -z "$PORT_TR6" ]] && PORT_TR6="$PORT_TR_SINGLE"
+
+SS_M="$(jq -r '.inbounds[] | select(.tag|test("^st-ss-local")) | .method' "$CONF" | head -n1)"
+SS_P="$(jq -r '.inbounds[] | select(.tag|test("^st-ss-local")) | .password' "$CONF" | head -n1)"
 SS_BASE=$(echo -n "${SS_M}:${SS_P}" | urlsafe_base64)
 PLUGIN_URL="shadow-tls;host=${ST_HOST};password=${ST_PWD};version=${ST_VER}"
 PLUGIN_URL="${PLUGIN_URL//;/\%3B}"
@@ -1989,7 +2066,7 @@ PLUGIN_URL="${PLUGIN_URL//=/\%3D}"
 
 LINK_ARGO=""
 if [[ -n "$SB_ARGO_DOMAIN" ]]; then
-  LINK_ARGO="vless://${UUID_R}@${SB_ARGO_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${SB_ARGO_DOMAIN}&path=%2Fargo#SB_Argo"
+  LINK_ARGO="vless://${UUID_R}@${SB_ARGO_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${SB_ARGO_DOMAIN}&path=%2Fargo#${PREFIX}_Argo"
 fi
 
 LINKS=()
@@ -1999,21 +2076,22 @@ multi=0; [[ "${#HOSTS[@]}" -gt 1 ]] && multi=1
 for i in "${!HOSTS[@]}"; do
   HOST_IP="${HOSTS[$i]}"; HOST_URL="$(url_host "$HOST_IP")"
   if [[ "$HOST_IP" == *:* ]]; then
-    PORT_R="$PORT_R6"; PORT_H="$PORT_H6"; PORT_T="$PORT_T6"; PORT_A="$PORT_A6"; ST_PORT="$ST_PORT6"; HOP_RANGE="${SB_HOP_PORTS_V6:-$SB_HOP_PORTS}"
+    PORT_R="$PORT_R6"; PORT_H="$PORT_H6"; PORT_T="$PORT_T6"; PORT_A="$PORT_A6"; ST_PORT="$ST_PORT6"; PORT_TR="$PORT_TR6"; HOP_RANGE="${SB_HOP_PORTS_V6:-$SB_HOP_PORTS}"
   else
-    PORT_R="$PORT_R4"; PORT_H="$PORT_H4"; PORT_T="$PORT_T4"; PORT_A="$PORT_A4"; ST_PORT="$ST_PORT4"; HOP_RANGE="$SB_HOP_PORTS"
+    PORT_R="$PORT_R4"; PORT_H="$PORT_H4"; PORT_T="$PORT_T4"; PORT_A="$PORT_A4"; ST_PORT="$ST_PORT4"; PORT_TR="$PORT_TR4"; HOP_RANGE="$SB_HOP_PORTS"
   fi
   suf=""; if [[ "$multi" -eq 1 ]]; then lab="${LABELS[$i]}"; [[ -n "$lab" ]] && suf="_${lab}"; fi
 
-  add_link "vless://${UUID_R}@${HOST_URL}:${PORT_R}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI_R}&fp=chrome&pbk=${SB_REALITY_PBK}&sid=${SID_R}&type=tcp&headerType=none#SB_Reality${suf}"
+  add_link "vless://${UUID_R}@${HOST_URL}:${PORT_R}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI_R}&fp=chrome&pbk=${SB_REALITY_PBK}&sid=${SID_R}&type=tcp&headerType=none#${PREFIX}_Reality${suf}"
   if [[ -n "$HOP_RANGE" ]]; then
-    add_link "hysteria2://${HY_PWD}@${HOST_URL}:${PORT_H}?insecure=${INSECURE}&sni=${SNI_HOST}&mport=${HOP_RANGE}#SB_Hy2_Hop${suf}"
+    add_link "hysteria2://${HY_PWD}@${HOST_URL}:${PORT_H}?insecure=${INSECURE}&sni=${SNI_HOST}&mport=${HOP_RANGE}#${PREFIX}_Hy2_Hop${suf}"
   else
-    add_link "hysteria2://${HY_PWD}@${HOST_URL}:${PORT_H}?insecure=${INSECURE}&sni=${SNI_HOST}#SB_Hy2${suf}"
+    add_link "hysteria2://${HY_PWD}@${HOST_URL}:${PORT_H}?insecure=${INSECURE}&sni=${SNI_HOST}#${PREFIX}_Hy2${suf}"
   fi
-  add_link "tuic://${TU_UUID}:${TU_PWD}@${HOST_URL}:${PORT_T}?congestion_control=bbr&alpn=h3&sni=${SNI_HOST}&allow_insecure=${INSECURE}#SB_Tuic${suf}"
-  add_link "anytls://${ANY_PWD}@${HOST_URL}:${PORT_A}?sni=${SNI_HOST}&insecure=${INSECURE}#SB_AnyTLS${suf}"
-  add_link "ss://${SS_BASE}@${HOST_URL}:${ST_PORT}?plugin=${PLUGIN_URL}#SB_ShadowTLS${suf}"
+  add_link "tuic://${TU_UUID}:${TU_PWD}@${HOST_URL}:${PORT_T}?congestion_control=bbr&alpn=h3&sni=${SNI_HOST}&allow_insecure=${INSECURE}#${PREFIX}_Tuic${suf}"
+  add_link "trojan://${TROJAN_PWD}@${HOST_URL}:${PORT_TR}?security=tls&alpn=h2,http/1.1&headerType=none&type=tcp&sni=${SNI_HOST}&allowInsecure=${INSECURE}#${PREFIX}_Trojan${suf}"
+  add_link "anytls://${ANY_PWD}@${HOST_URL}:${PORT_A}?sni=${SNI_HOST}&insecure=${INSECURE}#${PREFIX}_AnyTLS${suf}"
+  add_link "ss://${SS_BASE}@${HOST_URL}:${ST_PORT}?plugin=${PLUGIN_URL}#${PREFIX}_ShadowTLS${suf}"
 done
 [[ -n "$LINK_ARGO" ]] && add_link "$LINK_ARGO"
 
@@ -2023,82 +2101,85 @@ done
   for i in "${!HOSTS[@]}"; do
     HOST_IP="${HOSTS[$i]}"; HOST_YAML="$(yaml_host "$HOST_IP")"
     if [[ "$HOST_IP" == *:* ]]; then
-      PORT_R="$PORT_R6"; PORT_H="$PORT_H6"; PORT_T="$PORT_T6"; PORT_A="$PORT_A6"; ST_PORT="$ST_PORT6"; HOP_RANGE="${SB_HOP_PORTS_V6:-$SB_HOP_PORTS}"
+      PORT_R="$PORT_R6"; PORT_H="$PORT_H6"; PORT_T="$PORT_T6"; PORT_A="$PORT_A6"; ST_PORT="$ST_PORT6"; PORT_TR="$PORT_TR6"; HOP_RANGE="${SB_HOP_PORTS_V6:-$SB_HOP_PORTS}"
     else
-      PORT_R="$PORT_R4"; PORT_H="$PORT_H4"; PORT_T="$PORT_T4"; PORT_A="$PORT_A4"; ST_PORT="$ST_PORT4"; HOP_RANGE="$SB_HOP_PORTS"
+      PORT_R="$PORT_R4"; PORT_H="$PORT_H4"; PORT_T="$PORT_T4"; PORT_A="$PORT_A4"; ST_PORT="$ST_PORT4"; PORT_TR="$PORT_TR4"; HOP_RANGE="$SB_HOP_PORTS"
     fi
     suf=""; if [[ "$multi" -eq 1 ]]; then lab="${LABELS[$i]}"; [[ -n "$lab" ]] && suf="_${lab}"; fi
 
 cat <<YAML
-- name: SB_Reality${suf}
+- name: "${PREFIX}_Reality${suf}"
   type: vless
   server: ${HOST_YAML}
   port: ${PORT_R}
-  uuid: ${UUID_R}
+  uuid: "${UUID_R}"
   udp: true
   network: tcp
   flow: xtls-rprx-vision
   tls: true
-  servername: ${SNI_R}
+  servername: "${SNI_R}"
   client-fingerprint: chrome
-  reality-opts: { public-key: ${SB_REALITY_PBK}, short-id: ${SID_R} }
+  reality-opts: { public-key: "${SB_REALITY_PBK}", short-id: "${SID_R}" }
 YAML
     if [[ -n "$HOP_RANGE" ]]; then
 cat <<YAML
-- name: SB_Hy2_Hop${suf}
+- name: "${PREFIX}_Hy2_Hop${suf}"
   type: hysteria2
   server: ${HOST_YAML}
   ports: "${HOP_RANGE}"
-  password: ${HY_PWD}
-  sni: ${SNI_HOST}
+  password: "${HY_PWD}"
+  sni: "${SNI_HOST}"
+  up: "10000 Mbps"
+  down: "10000 Mbps"
   skip-cert-verify: $( [[ "$INSECURE" == "1" ]] && echo "true" || echo "false" )
   alpn: [h3]
   udp: true
 YAML
     else
 cat <<YAML
-- name: SB_Hy2${suf}
+- name: "${PREFIX}_Hy2${suf}"
   type: hysteria2
   server: ${HOST_YAML}
   port: ${PORT_H}
-  password: ${HY_PWD}
-  sni: ${SNI_HOST}
+  password: "${HY_PWD}"
+  sni: "${SNI_HOST}"
+  up: "10000 Mbps"
+  down: "10000 Mbps"
   skip-cert-verify: $( [[ "$INSECURE" == "1" ]] && echo "true" || echo "false" )
   alpn: [h3]
   udp: true
 YAML
     fi
 cat <<YAML
-- name: SB_Tuic${suf}
+- name: "${PREFIX}_Tuic${suf}"
   type: tuic
   server: ${HOST_YAML}
   port: ${PORT_T}
-  uuid: ${TU_UUID}
-  password: ${TU_PWD}
+  uuid: "${TU_UUID}"
+  password: "${TU_PWD}"
   alpn: [h3]
-  sni: ${SNI_HOST}
+  sni: "${SNI_HOST}"
   skip-cert-verify: $( [[ "$INSECURE" == "1" ]] && echo "true" || echo "false" )
   udp-relay-mode: native
   congestion-controller: bbr
 YAML
 cat <<YAML
-- name: SB_AnyTLS${suf}
-  type: anytls
+- name: "${PREFIX}_Trojan${suf}"
+  type: trojan
   server: ${HOST_YAML}
-  port: ${PORT_A}
-  password: ${ANY_PWD}
-  client-fingerprint: chrome
+  port: ${PORT_TR}
+  password: "${TROJAN_PWD}"
   udp: true
-  sni: ${SNI_HOST}
+  sni: "${SNI_HOST}"
   alpn: [h2, http/1.1]
   skip-cert-verify: $( [[ "$INSECURE" == "1" ]] && echo "true" || echo "false" )
 YAML
 cat <<YAML
-- name: SB_ShadowTLS${suf}
+- name: "${PREFIX}_ShadowTLS${suf}"
   type: ss
   server: ${HOST_YAML}
   port: ${ST_PORT}
-  cipher: ${SS_M}
+  cipher: "${SS_M}"
   password: "${SS_P}"
   udp: false
   plugin: shadow-tls
@@ -2108,16 +2189,16 @@ YAML
   done
   if [[ -n "$SB_ARGO_DOMAIN" ]]; then
 cat <<YAML
-- name: SB_Argo
+- name: "${PREFIX}_Argo"
   type: vless
-  server: ${SB_ARGO_DOMAIN}
+  server: "${SB_ARGO_DOMAIN}"
   port: 443
-  uuid: ${UUID_R}
+  uuid: "${UUID_R}"
   udp: true
   tls: true
-  servername: ${SB_ARGO_DOMAIN}
+  servername: "${SB_ARGO_DOMAIN}"
   network: ws
-  ws-opts: { path: /argo, headers: { Host: ${SB_ARGO_DOMAIN} } }
+  ws-opts: { path: /argo, headers: { Host: "${SB_ARGO_DOMAIN}" } }
 YAML
   fi
 } | tee "$MIHOMO_FILE" >/dev/null
@@ -2153,5 +2234,5 @@ chmod +x /usr/local/bin/sb-selfcheck.sh
 /usr/local/bin/sb-selfcheck.sh 2>/dev/null || true
 
 echo -e "\n${GREEN}=== 部署完成 ===${PLAIN}"
-echo -e ">>> 输入 ${GREEN}sb${PLAIN} 查看节点链接"
+echo -e ">>> 输入 ${GREEN}sb${PLAIN} 随时调出菜单与查看节点链接！\n"
 "$SHORTCUT_BIN"
