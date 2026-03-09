@@ -1,62 +1,61 @@
+&lt;p align="center"&gt;
+  &lt;img src="https://raw.githubusercontent.com/SagerNet/sing-box/main/docs/assets/logo.svg" width="120" alt="Sing-box Logo" /&gt;
+&lt;/p&gt;
 
-readme_content = '''<p align="center">
-  <img src="https://raw.githubusercontent.com/SagerNet/sing-box/main/docs/assets/logo.svg" width="120" alt="Sing-box Logo" />
-</p>
+&lt;h1 align="center"&gt;🚀 Sing-box 终极定制版安装脚本&lt;/h1&gt;
 
-<h1 align="center">🚀 Sing-box 终极定制版安装脚本</h1>
+&lt;p align="center"&gt;
+  &lt;a href="https://github.com/kzhx666/sb-install/stargazers"&gt;&lt;img src="https://img.shields.io/github/stars/kzhx666/sb-install?style=for-the-badge&color=ff69b4" alt="Stars" /&gt;&lt;/a&gt;
+  &lt;a href="https://github.com/kzhx666/sb-install/network/members"&gt;&lt;img src="https://img.shields.io/github/forks/kzhx666/sb-install?style=for-the-badge&color=blue" alt="Forks" /&gt;&lt;/a&gt;
+  &lt;a href="https://github.com/kzhx666/sb-install/issues"&gt;&lt;img src="https://img.shields.io/github/issues/kzhx666/sb-install?style=for-the-badge&color=red" alt="Issues" /&gt;&lt;/a&gt;
+  &lt;a href="https://github.com/kzhx666/sb-install/blob/main/LICENSE"&gt;&lt;img src="https://img.shields.io/github/license/kzhx666/sb-install?style=for-the-badge&color=green" alt="License" /&gt;&lt;/a&gt;
+  &lt;br/&gt;
+  &lt;a href="https://sing-box.sagernet.org/"&gt;&lt;img src="https://img.shields.io/badge/Sing--Box-Core-1.12+-blue?style=for-the-badge&logo=linux" alt="Sing-box Core" /&gt;&lt;/a&gt;
+  &lt;a href="#"&gt;&lt;img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=for-the-badge&logo=gnu-bash&logoColor=white" alt="Bash" /&gt;&lt;/a&gt;
+  &lt;a href="#"&gt;&lt;img src="https://img.shields.io/badge/Platform-Linux-orange?style=for-the-badge&logo=linux" alt="Platform" /&gt;&lt;/a&gt;
+&lt;/p&gt;
 
-<p align="center">
-  <a href="https://github.com/kzhx666/sb-install/stargazers"><img src="https://img.shields.io/github/stars/kzhx666/sb-install?style=for-the-badge&color=ff69b4" alt="Stars" /></a>
-  <a href="https://github.com/kzhx666/sb-install/network/members"><img src="https://img.shields.io/github/forks/kzhx666/sb-install?style=for-the-badge&color=blue" alt="Forks" /></a>
-  <a href="https://github.com/kzhx666/sb-install/issues"><img src="https://img.shields.io/github/issues/kzhx666/sb-install?style=for-the-badge&color=red" alt="Issues" /></a>
-  <a href="https://github.com/kzhx666/sb-install/blob/main/LICENSE"><img src="https://img.shields.io/github/license/kzhx666/sb-install?style=for-the-badge&color=green" alt="License" /></a>
-  <br/>
-  <a href="https://sing-box.sagernet.org/"><img src="https://img.shields.io/badge/Sing--Box-Core-1.12+-blue?style=for-the-badge&logo=linux" alt="Sing-box Core" /></a>
-  <a href="#"><img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=for-the-badge&logo=gnu-bash&logoColor=white" alt="Bash" /></a>
-  <a href="#"><img src="https://img.shields.io/badge/Platform-Linux-orange?style=for-the-badge&logo=linux" alt="Platform" /></a>
-</p>
+&lt;p align="center"&gt;
+  &lt;b&gt;一键部署 Sing-box 多协议代理服务 | 支持 Reality/Hysteria2/Tuic/AnyTLS/ShadowTLS/Trojan | 内置 WARP 分流 | 端口跳跃 | Cloudflare Argo 隧道&lt;/b&gt;
+&lt;/p&gt;
 
-<p align="center">
-  <b>一键部署 Sing-box 多协议代理服务 | 支持 Reality/Hysteria2/Tuic/AnyTLS/ShadowTLS/Trojan | 内置 WARP 分流 | 端口跳跃 | Cloudflare Argo 隧道</b>
-</p>
-
-<p align="center">
-  <a href="#-快速开始">🚀 快速开始</a> •
-  <a href="#-功能特性">✨ 功能特性</a> •
-  <a href="#-系统支持">💻 系统支持</a> •
-  <a href="#-项目结构">📁 项目结构</a> •
-  <a href="#-faq">❓ FAQ</a> •
-  <a href="#-更新日志">📋 更新日志</a>
-</p>
+&lt;p align="center"&gt;
+  &lt;a href="#-快速开始"&gt;🚀 快速开始&lt;/a&gt; •
+  &lt;a href="#-功能特性"&gt;✨ 功能特性&lt;/a&gt; •
+  &lt;a href="#-系统支持"&gt;💻 系统支持&lt;/a&gt; •
+  &lt;a href="#-项目结构"&gt;📁 项目结构&lt;/a&gt; •
+  &lt;a href="#-faq"&gt;❓ FAQ&lt;/a&gt; •
+  &lt;a href="#-更新日志"&gt;📋 更新日志&lt;/a&gt;
+&lt;/p&gt;
 
 ---
 
 ## 📸 项目截图
 
-<details>
-<summary>点击查看演示截图</summary>
+&lt;details&gt;
+&lt;summary&gt;点击查看演示截图&lt;/summary&gt;
 
 | 主菜单界面 | 配置生成 | 节点输出 |
 |:---:|:---:|:---:|
 | ![Menu](https://via.placeholder.com/400x200/2d2d2d/ffffff?text=Interactive+Menu) | ![Config](https://via.placeholder.com/400x200/2d2d2d/ffffff?text=Auto+Config+Gen) | ![Nodes](https://via.placeholder.com/400x200/2d2d2d/ffffff?text=Multi-Protocol+Links) |
 
-</details>
+&lt;/details&gt;
 
 ## ⚡ 一键安装
 
 ```bash
 # 方式一：直接运行（推荐）
-bash <(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
+bash &lt;(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
 
 # 方式二：先下载再执行
 wget -N https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh && bash install.sh
 
 # 方式三：使用代理加速（国内服务器）
-bash <(curl -fsSL https://ghproxy.com/https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
+bash &lt;(curl -fsSL https://ghproxy.com/https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
 ```
 
-> 🎬 **安装演示 GIF**  
-> ![Install Demo](https://via.placeholder.com/800x400/1a1a2e/ffffff?text=Auto+Install+Demo+GIF)
+&gt; 🎬 **安装演示 GIF**  
+&gt; ![Install Demo](https://via.placeholder.com/800x400/1a1a2e/ffffff?text=Auto+Install+Demo+GIF)
 
 ---
 
@@ -123,15 +122,15 @@ bash <(curl -fsSL https://ghproxy.com/https://raw.githubusercontent.com/kzhx666/
 
 ```bash
 # Debian/Ubuntu
-apt-get update && apt-get install -y bash curl wget tar jq openssl socat lsof net-tools \\
+apt-get update && apt-get install -y bash curl wget tar jq openssl socat lsof net-tools \
   iptables iproute2 nftables ca-certificates coreutils util-linux libcap2-bin tcpdump
 
 # CentOS/RHEL
-yum install -y bash curl wget tar jq openssl socat lsof net-tools \\
+yum install -y bash curl wget tar jq openssl socat lsof net-tools \
   iptables iproute nftables ca-certificates coreutils util-linux libcap tcpdump
 
 # Alpine Linux
-apk add --no-cache bash curl wget tar jq openssl socat lsof net-tools \\
+apk add --no-cache bash curl wget tar jq openssl socat lsof net-tools \
   iptables ip6tables nftables iproute2 ca-certificates coreutils util-linux libcap tcpdump
 ```
 
@@ -139,14 +138,14 @@ apk add --no-cache bash curl wget tar jq openssl socat lsof net-tools \\
 
 ```bash
 # 开启 BBR 加速（脚本会自动配置）
-echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+echo "net.core.default_qdisc=fq" &gt;&gt; /etc/sysctl.conf
+echo "net.ipv4.tcp_congestion_control=bbr" &gt;&gt; /etc/sysctl.conf
 sysctl -p
 
 # 调整文件描述符限制
 ulimit -n 1048576
-echo "* soft nofile 1048576" >> /etc/security/limits.conf
-echo "* hard nofile 1048576" >> /etc/security/limits.conf
+echo "* soft nofile 1048576" &gt;&gt; /etc/security/limits.conf
+echo "* hard nofile 1048576" &gt;&gt; /etc/security/limits.conf
 ```
 
 ---
@@ -157,10 +156,10 @@ echo "* hard nofile 1048576" >> /etc/security/limits.conf
 
 ```bash
 # 使用 curl（推荐）
-bash <(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
+bash &lt;(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
 
 # 或使用 wget
-bash <(wget -qO- https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
+bash &lt;(wget -qO- https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
 ```
 
 ### 步骤 2：交互式配置
@@ -327,8 +326,8 @@ install.sh
 
 ## ❓ FAQ
 
-<details>
-<summary><b>Q: 安装过程中提示 "端口被占用" 怎么办？</b></summary>
+&lt;details&gt;
+&lt;summary&gt;&lt;b&gt;Q: 安装过程中提示 "端口被占用" 怎么办？&lt;/b&gt;&lt;/summary&gt;
 
 脚本会自动检测端口占用并重新分配随机端口。如需指定端口，请确保该端口未被其他服务使用：
 
@@ -337,10 +336,10 @@ install.sh
 lsof -i :8080
 ss -tulnp | grep 8080
 ```
-</details>
+&lt;/details&gt;
 
-<details>
-<summary><b>Q: WARP 连接失败或频繁断开？</b></summary>
+&lt;details&gt;
+&lt;summary&gt;&lt;b&gt;Q: WARP 连接失败或频繁断开？&lt;/b&gt;&lt;/summary&gt;
 
 脚本内置 WARP 自愈守护，会自动检测并切换端口。如需手动调整：
 
@@ -355,10 +354,10 @@ nano /etc/sing-box/config.json
 # 重启服务
 systemctl restart sing-box
 ```
-</details>
+&lt;/details&gt;
 
-<details>
-<summary><b>Q: 如何更新 Sing-box 核心？</b></summary>
+&lt;details&gt;
+&lt;summary&gt;&lt;b&gt;Q: 如何更新 Sing-box 核心？&lt;/b&gt;&lt;/summary&gt;
 
 ```bash
 # 方式一：使用 sb 命令菜单
@@ -366,25 +365,25 @@ sb
 # 选择选项 3
 
 # 方式二：手动更新
-bash <(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
+bash &lt;(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh)
 # 选择更新核心
 ```
-</details>
+&lt;/details&gt;
 
-<details>
-<summary><b>Q: 如何完全卸载？</b></summary>
+&lt;details&gt;
+&lt;summary&gt;&lt;b&gt;Q: 如何完全卸载？&lt;/b&gt;&lt;/summary&gt;
 
 ```bash
 sb
 # 选择选项 4
 
 # 或执行
-bash <(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh) --uninstall
+bash &lt;(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/install.sh) --uninstall
 ```
-</details>
+&lt;/details&gt;
 
-<details>
-<summary><b>Q: 支持哪些客户端？</b></summary>
+&lt;details&gt;
+&lt;summary&gt;&lt;b&gt;Q: 支持哪些客户端？&lt;/b&gt;&lt;/summary&gt;
 
 | 客户端 | 支持协议 | 推荐版本 |
 |:---|:---|:---:|
@@ -396,10 +395,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/inst
 | **Shadowrocket** | 全协议 | iOS 付费 |
 | **Stash** | 全协议 | iOS/macOS |
 
-</details>
+&lt;/details&gt;
 
-<details>
-<summary><b>Q: 如何开启端口跳跃的 Hysteria2？</b></summary>
+&lt;details&gt;
+&lt;summary&gt;&lt;b&gt;Q: 如何开启端口跳跃的 Hysteria2？&lt;/b&gt;&lt;/summary&gt;
 
 安装时输入跳跃范围如 `31000-32000`，脚本会自动配置：
 - **方式一**：nftables/iptables REDIRECT（推荐，性能最好）
@@ -410,7 +409,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/kzhx666/sb-install/main/inst
 ```
 hysteria2://password@ip:31000-32000?mport=31000-32000&sni=bing.com
 ```
-</details>
+&lt;/details&gt;
 
 ---
 
@@ -447,9 +446,9 @@ hysteria2://password@ip:31000-32000?mport=31000-32000&sni=bing.com
 
 感谢所有为这个项目做出贡献的开发者！
 
-<a href="https://github.com/kzhx666/sb-install/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=kzhx666/sb-install" />
-</a>
+&lt;a href="https://github.com/kzhx666/sb-install/graphs/contributors"&gt;
+  &lt;img src="https://contrib.rocks/image?repo=kzhx666/sb-install" /&gt;
+&lt;/a&gt;
 
 ### 如何贡献
 
@@ -492,13 +491,12 @@ copies or substantial portions of the Software.
 
 ---
 
-<p align="center">
-  <b>如果这个项目对你有帮助，请给它一个 ⭐ Star！</b>
-</p>
+&lt;p align="center"&gt;
+  &lt;b&gt;如果这个项目对你有帮助，请给它一个 ⭐ Star！&lt;/b&gt;
+&lt;/p&gt;
 
-<p align="center">
-  <a href="https://github.com/kzhx666/sb-install/stargazers">⭐ Star 项目</a> •
-  <a href="https://github.com/kzhx666/sb-install/issues/new">🐛 提交问题</a> •
-  <a href="https://github.com/kzhx666/sb-install/fork">🔀 Fork 项目</a>
-</p>
-'''
+&lt;p align="center"&gt;
+  &lt;a href="https://github.com/kzhx666/sb-install/stargazers"&gt;⭐ Star 项目&lt;/a&gt; •
+  &lt;a href="https://github.com/kzhx666/sb-install/issues/new"&gt;🐛 提交问题&lt;/a&gt; •
+  &lt;a href="https://github.com/kzhx666/sb-install/fork"&gt;🔀 Fork 项目&lt;/a&gt;
+&lt;/p&gt;
