@@ -94,7 +94,7 @@ install_pkgs(){
       ;;
     apk)
       apk add --no-cache bash curl wget tar jq openssl socat lsof net-tools file gzip grep \
-        iptables ip6tables nftables iproute2 ca-certificates coreutils util-linux libcap tcpdump >/dev/null 2>&1
+        iptables ip6tables nftables iproute2 ca-certificates coreutils util-linux libcap tcpdump libc6-compat gcompat >/dev/null 2>&1
       ;;
     *)
       warn "未识别包管理器，跳过依赖安装"
