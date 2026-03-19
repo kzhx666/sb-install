@@ -889,15 +889,33 @@ EOF
   rm -f /tmp/sb_openssl.cnf
   ok "自签证书完成"
 elif [[ "$USE_ACME" == "true" ]]; then
-  curl -s https://get.acme.sh | sh >/dev/null 2>&1 || true
+
+  # --- [修复开始] 针对 ACME 证书签发失败的三个致命漏洞进行修复 ---
+  # 1. 安装 acme.sh 依赖的 cron 定时任务工具，防止在 Debian 12 等精简系统上预检失败被中断
+  if ! command -v crontab >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then apt-get install -y cron >/dev/null 2>&1; systemctl enable --now cron >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then yum install -y cronie >/dev/null 2>&1; systemctl enable --now crond >/dev/null 2>&1 || true
+    fi
+  fi
+  
+  # 2. 加上邮箱参数自动注册 ACME 账户，否则新版 acme.sh 会因为缺少账户而拒绝签发
+  curl -s https://get.acme.sh | sh -s email=admin@${DOMAIN} >/dev/null 2>&1 || true
   ~/.acme.sh/acme.sh --upgrade --auto-upgrade >/dev/null 2>&1 || true
   ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
+  
   if [[ "${ACME_MODE:-}" == "dns" ]]; then
     export CF_Token="${CF_Token}"
     ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$DOMAIN" --keylength ec-256 --force >/dev/null 2>&1 || true
   else
+    # 3. 提前放行 80 端口，解决原脚本“先申请证书(第3步)、后放行防火墙(第8步)”导致的逻辑死锁问题
+    command -v iptables >/dev/null 2>&1 && iptables -I INPUT -p tcp --dport 80 -j ACCEPT >/dev/null 2>&1 || true
+    command -v ufw >/dev/null 2>&1 && ufw allow 80/tcp >/dev/null 2>&1 || true
+    command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --add-port=80/tcp >/dev/null 2>&1 || true
+    
     ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --keylength ec-256 --force >/dev/null 2>&1 || true
   fi
+  # --- [修复结束] ---
+
   SB_RELOADCMD='rc-service sing-box restart 2>/dev/null || systemctl restart sing-box'
   ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
     --fullchain-file "$CERT_PATH" --key-file "$KEY_PATH" --reloadcmd "$SB_RELOADCMD" >/dev/null 2>&1 || true
