@@ -301,7 +301,7 @@ _warp_try_port(){
   cat > "$tmpc" <<EOF
 {
   "log": { "level": "warn", "timestamp": true },
-  "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
+  "dns": { "servers": [ { "type": "tcp", "server": "8.8.8.8", "tag": "local" } ] },
   "endpoints": [
     {
       "type": "wireguard",
@@ -1182,7 +1182,7 @@ if [[ "$OUT_MODE" == "both" ]]; then
 cat > "$CONF_DIR/config.json" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
-  "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
+  "dns": { "servers": [ { "type": "tcp", "server": "8.8.8.8", "tag": "local" } ] },
 ${WARP_ENDPOINTS_BLOCK}  "route": {
     "auto_detect_interface": true,
     "rules": [
@@ -1357,7 +1357,7 @@ else
 cat > "$CONF_DIR/config.json" <<EOF
 {
   "log": { "level": "info", "timestamp": true },
-  "dns": { "servers": [ { "type": "local", "tag": "local" } ] },
+  "dns": { "servers": [ { "type": "tcp", "server": "8.8.8.8", "tag": "local" } ] },
 ${WARP_ENDPOINTS_BLOCK}  "route": {
     "auto_detect_interface": true,
     "rules": [
